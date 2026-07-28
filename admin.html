@@ -441,19 +441,55 @@
   <section class="page hide" id="pane-setting">
     <div class="phd"><h2>系统设置</h2></div>
     <div class="card">
-      <div class="sec">DLL 与端口</div>
-      <div class="ffield"><div class="lab">Loader DLL 路径</div>
-        <input type="text" id="cfgLoader" placeholder="./WxWorkLoader.dll"></div>
-      <div class="ffield"><div class="lab">Helper DLL 路径</div>
-        <input type="text" id="cfgHelper" placeholder="./WxWorkHelper.dll"></div>
-      <div class="ffield"><div class="lab">企业微信 EXE<span class="tip">留空自动查找</span></div>
-        <input type="text" id="cfgExe" placeholder="留空即可"></div>
+      <div class="sec">语聚接入</div>
+      <div class="ffield"><div class="lab">启用 webhook 接收
+        <span class="tip">关闭后 /gw/jjy-hook 仍回 200，但一条都不处理</span>
+        <label class="sw"><input type="checkbox" id="cfgJjyOn"><span class="sl"></span></label></div></div>
+      <div class="ffield"><div class="lab">公司 ID 白名单
+        <span class="tip">多个用逗号分隔。语聚 webhook 没有签名，这是唯一的身份校验</span></div>
+        <input type="text" id="cfgJjyCompany" placeholder="jl9408"></div>
+      <div class="warnbar" id="jjyWarn">
+        白名单为空 = <b>不做任何校验</b>，任何人 POST 到回调地址都会被当成真实消息入库并触发工作流。公网环境务必填写。
+      </div>
       <div class="frow">
+        <div class="ffield"><div class="lab">机器人昵称
+          <span class="tip">群聊「@我」判定用，靠正文文本匹配</span></div>
+          <input type="text" id="cfgJjyBot" placeholder="RTE智能助手"></div>
+        <div class="ffield"><div class="lab">去重窗口
+          <span class="tip">记住最近 N 个 event_id，改动需重启</span></div>
+          <input type="number" id="cfgJjyDedup" min="100" placeholder="4000"></div>
+      </div>
+
+      <div class="sec">服务</div>
+      <div class="frow">
+        <div class="ffield"><div class="lab">监听地址
+          <span class="tip">127.0.0.1=只经反代，改动需重启</span></div>
+          <input type="text" id="cfgAddr" placeholder="127.0.0.1"></div>
         <div class="ffield"><div class="lab">网关端口<span class="tip">改动需重启</span></div>
           <input type="number" id="cfgPort" placeholder="9000"></div>
-        <div class="ffield"><div class="lab">每会话保留消息数<span class="tip">0=不限制，改动需重启</span></div>
-          <input type="number" id="cfgKeep" placeholder="5000"></div>
       </div>
+      <div class="ffield"><div class="lab">每会话保留消息数
+        <span class="tip">0=不限制，改动需重启</span></div>
+        <input type="number" id="cfgKeep" placeholder="5000"></div>
+
+      <div class="sec">媒体</div>
+      <div class="ffield"><div class="lab">处理方式
+        <span class="tip">直链=不落盘，/media/&lt;id&gt; 跳转到原始 URL；下载=归档到本地</span></div>
+        <select id="cfgMediaMode" class="rawsel">
+          <option value="link">直链（不下载）</option>
+          <option value="download">下载归档</option>
+        </select></div>
+      <div class="frow">
+        <div class="ffield"><div class="lab">文件自动下载上限(MB)
+          <span class="tip">仅下载模式生效</span></div>
+          <input type="number" id="cfgMediaCap" placeholder="50"></div>
+        <div class="ffield"><div class="lab">保留天数
+          <span class="tip">0=不清理，仅下载模式生效</span></div>
+          <input type="number" id="cfgMediaKeep" placeholder="3"></div>
+      </div>
+      <div class="ffield"><div class="lab">图片自动下载<span class="tip">仅下载模式生效</span>
+        <label class="sw"><input type="checkbox" id="cfgMediaImg"><span class="sl"></span></label></div></div>
+
       <div class="sec">健康检查与告警</div>
       <div class="ffield"><div class="lab">启用健康检查
         <label class="sw"><input type="checkbox" id="cfgHcOn"><span class="sl"></span></label></div></div>
@@ -463,16 +499,25 @@
         <div class="ffield"><div class="lab">恢复时也通知
           <label class="sw"><input type="checkbox" id="cfgHcRec"><span class="sl"></span></label></div></div>
       </div>
-      <div class="ffield"><div class="lab">企微机器人 Webhook<span class="tip">掉线时推送告警</span></div>
+      <div class="frow">
+        <div class="ffield"><div class="lab">队列积压阈值
+          <span class="tip">待处理超过这个数=异常，说明 worker 卡住了</span></div>
+          <input type="number" id="cfgHcBack" min="10" placeholder="200"></div>
+        <div class="ffield"><div class="lab">静默多久算异常(分钟)
+          <span class="tip">0=不检查。夜间本来就没消息，开了容易误报</span></div>
+          <input type="number" id="cfgHcStale" min="0" placeholder="0"></div>
+      </div>
+      <div class="ffield"><div class="lab">告警机器人 Webhook
+        <span class="tip">企微/钉钉/飞书均可。留空则只写日志不推送</span></div>
         <input type="text" id="cfgHook" placeholder="https://qyapi.weixin.qq.com/cgi-bin/webhook/send?key=xxx"></div>
       <div class="sec">调试</div>
       <div class="ffield"><div class="lab">抓取原始推送
-        <span class="tip">把 DLL 回调的每条通知原样留在内存，供「原始推送」页查看</span>
+        <span class="tip">把语聚推送的报文原样留在内存，供「原始推送」页查看</span>
         <label class="sw"><input type="checkbox" id="cfgRawOn"><span class="sl"></span></label></div></div>
       <div class="ffield"><div class="lab">保留条数<span class="tip">仅内存，不写数据库；重启即清空</span></div>
         <input type="number" id="cfgRawMax" min="20" max="1000" placeholder="300"></div>
       <div class="warnbar" id="rawWarn">
-        原始推送含<b>消息原文</b>和 <b>CDN 凭证(aes_key / auth_key)</b>。仅在排查问题时打开，开放公网访问前请务必关闭。
+        原始推送含<b>客户对话全文</b>。仅在排查报文格式问题时打开，查完请关闭。
       </div>
       <div style="display:flex;gap:10px;margin-top:16px">
         <button class="btn primary" id="btnSaveCfg">保存设置</button>
@@ -491,7 +536,7 @@
       <button class="btn sm" id="btnRawClear"><svg><use href="#i-list"/></svg>清空</button>
     </div>
     <div class="warnbar hide" id="rawOff">
-      抓取已关闭。打开右上角开关（或到「系统设置 → 调试」）后，DLL 的每一条回调都会原样出现在这里。
+      抓取已关闭。打开右上角开关（或到「系统设置 → 调试」）后，语聚推送的每条报文都会原样出现在这里。
     </div>
     <div id="rawList"></div>
     <div class="empty hide" id="rawEmpty" style="box-shadow:none">
@@ -1532,29 +1577,68 @@ setInterval(()=>{
 // ==================== 系统设置 ====================
 async function loadCfg(){
   try{const c=await api('gw/config');
-    $('#cfgLoader').value=c.loader_dll||'';$('#cfgHelper').value=c.helper_dll||'';
-    $('#cfgExe').value=c.wxwork_exe||'';$('#cfgPort').value=c.listen_port||9000;
+    const j=c.jjy||{};
+    $('#cfgJjyOn').checked=!!j.enabled;
+    $('#cfgJjyCompany').value=(j.allow_company||[]).join(', ');
+    $('#cfgJjyBot').value=j.bot_name||'';
+    $('#cfgJjyDedup').value=j.dedup_max||4000;
+    jjyWarnSync();
+    $('#cfgAddr').value=c.listen_addr||'127.0.0.1';
+    $('#cfgPort').value=c.listen_port||9000;
     $('#cfgKeep').value=(c.storage||{}).max_msg_per_session??5000;
+    const m=c.media||{};
+    $('#cfgMediaMode').value=m.mode||'link';
+    $('#cfgMediaCap').value=m.auto_download_mb??50;
+    $('#cfgMediaKeep').value=m.keep_days??3;
+    $('#cfgMediaImg').checked=m.image_auto!==false;
+    mediaModeSync();
     const h=c.health||{};
     $('#cfgHcOn').checked=h.enabled!==false;$('#cfgHcInt').value=h.interval_sec||60;
     $('#cfgHook').value=h.webhook_url||'';$('#cfgHcRec').checked=h.alert_on_recovery!==false;
+    $('#cfgHcBack').value=h.max_backlog||200;$('#cfgHcStale').value=h.stale_minutes||0;
     const dbg=c.debug||{};
     $('#cfgRawOn').checked=!!dbg.raw_push;$('#cfgRawMax').value=dbg.raw_max||300;
     $('#rawWarn').classList.toggle('hide',!dbg.raw_push);}catch(e){}
 }
+// 白名单为空时把警告条亮出来
+function jjyWarnSync(){
+  const empty=!$('#cfgJjyCompany').value.trim();
+  $('#jjyWarn').classList.toggle('hide',!(empty && $('#cfgJjyOn').checked));
+}
+// 直链模式下把只对下载模式生效的几项置灰，免得改了没反应还以为是 bug
+function mediaModeSync(){
+  const dl=$('#cfgMediaMode').value==='download';
+  ['cfgMediaCap','cfgMediaKeep','cfgMediaImg'].forEach(id=>{
+    const el=$('#'+id); el.disabled=!dl;
+    el.closest('.ffield').style.opacity=dl?'':'.45';});
+}
+$('#cfgJjyCompany').oninput=jjyWarnSync;
+$('#cfgJjyOn').onchange=jjyWarnSync;
+$('#cfgMediaMode').onchange=mediaModeSync;
 $('#btnSaveCfg').onclick=async()=>{
+  const companies=$('#cfgJjyCompany').value.split(/[,，\s]+/).map(x=>x.trim()).filter(Boolean);
   const j=await api('gw/config',{
-    loader_dll:$('#cfgLoader').value.trim(),helper_dll:$('#cfgHelper').value.trim(),
-    wxwork_exe:$('#cfgExe').value.trim(),listen_port:+$('#cfgPort').value||9000,
+    listen_addr:$('#cfgAddr').value.trim()||'127.0.0.1',
+    listen_port:+$('#cfgPort').value||9000,
+    jjy:{enabled:$('#cfgJjyOn').checked,allow_company:companies,
+         bot_name:$('#cfgJjyBot').value.trim(),
+         dedup_max:Math.max(100,+$('#cfgJjyDedup').value||4000)},
     storage:{max_msg_per_session:+$('#cfgKeep').value||0},
+    media:{mode:$('#cfgMediaMode').value,
+           auto_download_mb:+$('#cfgMediaCap').value||50,
+           keep_days:+$('#cfgMediaKeep').value||0,
+           image_auto:$('#cfgMediaImg').checked},
     health:{enabled:$('#cfgHcOn').checked,interval_sec:+$('#cfgHcInt').value||60,
-      webhook_url:$('#cfgHook').value.trim(),alert_on_recovery:$('#cfgHcRec').checked},
+      webhook_url:$('#cfgHook').value.trim(),alert_on_recovery:$('#cfgHcRec').checked,
+      max_backlog:Math.max(10,+$('#cfgHcBack').value||200),
+      stale_minutes:Math.max(0,+$('#cfgHcStale').value||0)},
     debug:{raw_push:$('#cfgRawOn').checked,
            raw_max:Math.min(1000,Math.max(20,+$('#cfgRawMax').value||300))}});
   $('#rawWarn').classList.toggle('hide',!$('#cfgRawOn').checked);
   $('#rawToggle').checked=$('#cfgRawOn').checked;
+  jjyWarnSync();
   RAW_SEQ=0; loadRaw(false);
-  toast(j.ok?'已保存（端口/存储改动需重启生效）':'保存失败');
+  toast(j.ok?'已保存（监听地址/端口/存储/去重窗口需重启生效）':'保存失败');
 };
 $('#cfgRawOn').onchange=e=>$('#rawWarn').classList.toggle('hide',!e.target.checked);
 $('#btnTestHook').onclick=async()=>{

@@ -1176,12 +1176,13 @@ def main():
     threading.Thread(target=health_loop, daemon=True).start()
 
     jc = CONFIG.get("jjy") or {}
-    if jc.get("enabled"):
-        SEEN_EVENTS = deque(maxlen=max(100, int(jc.get("dedup_max") or 4000)))
-        threading.Thread(target=jjy_worker, name="jjy", daemon=True).start()
-        if not (jc.get("allow_company") or []):
-            log.warning("语聚 webhook 已启用但 allow_company 为空 —— 任何人 POST 都会被当成真消息，"
-                        "公网环境务必配上 company_id 白名单")
+    SEEN_EVENTS = deque(maxlen=max(100, int(jc.get("dedup_max") or 4000)))
+    # worker 无条件常驻：enabled 是在 HTTP 入口处判断的，这样管理页上开关一拨就生效，
+    # 不用重启。worker 平时阻塞在队列上，不占 CPU。
+    threading.Thread(target=jjy_worker, name="jjy", daemon=True).start()
+    if jc.get("enabled") and not (jc.get("allow_company") or []):
+        log.warning("语聚 webhook 已启用但 allow_company 为空 —— 任何人 POST 都会被当成真消息，"
+                    "公网环境务必配上 company_id 白名单")
 
     # 媒体下载 worker + 清理线程。重启后把上次没下完的重新排队(含 state=1 的中断项)
     mc = _mcfg()
