@@ -1,0 +1,1569 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>管理后台 · 企业微信消息网关</title>
+<link rel="icon" href='data:image/svg+xml,<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"><rect width="24" height="24" rx="6" fill="%23636df0"/><path d="M12 6v12M6 12h12" stroke="white" stroke-width="2" fill="none" stroke-linecap="round"/></svg>'>
+<style>
+  *{box-sizing:border-box;margin:0;padding:0}
+  :root{
+    --bg:#f2f3f5; --panel:#fff;
+    --border:#e9ebee; --border-2:#dde0e5;
+    --text:#191b1f; --text-2:#5c636e; --text-3:#9aa0a8;
+    --brand:#07c160; --brand-d:#06ad56; --brand-weak:#e9f8ef;
+    --blue:#636df0; --blue-weak:#eef0fe;
+    --red:#fa5151; --red-bg:#fdeeee;
+    --amber:#c98a2d; --amber-bg:#fdf6ec;
+    --sh-pop:0 24px 64px -16px rgba(16,20,28,.30),0 8px 24px -12px rgba(16,20,28,.14);
+    --mono:ui-monospace,"SF Mono",Menlo,Consolas,monospace;
+  }
+  html{-webkit-font-smoothing:antialiased}
+  html,body{height:100%}
+  body{font-family:"PingFang SC","Microsoft YaHei",-apple-system,BlinkMacSystemFont,"Segoe UI",sans-serif;
+       background:var(--bg);color:var(--text);font-size:13.5px;line-height:1.6;display:flex;overflow:hidden}
+  svg.ic{width:16px;height:16px;stroke:currentColor;fill:none;stroke-width:1.8;
+         stroke-linecap:round;stroke-linejoin:round;flex-shrink:0}
+
+  /* ============ 左侧导航 ============ */
+  .nav{width:208px;flex-shrink:0;background:var(--panel);border-right:1px solid var(--border);
+       display:flex;flex-direction:column;padding:16px 10px}
+  .nav .brand{display:flex;align-items:center;gap:9px;padding:0 8px 14px}
+  .logo{width:27px;height:27px;border-radius:8px;background:linear-gradient(155deg,#7d86f5,#4a55e0);
+        display:grid;place-items:center;box-shadow:0 2px 7px rgba(99,109,240,.3)}
+  .logo svg{width:15px;height:15px;stroke:#fff;fill:none;stroke-width:2;stroke-linecap:round}
+  .nav .brand b{font-size:15px;font-weight:700}
+  .nitem{display:flex;align-items:center;gap:9px;padding:9px 12px;border-radius:9px;cursor:pointer;
+         color:var(--text-2);font-weight:500;margin-bottom:2px;text-decoration:none;font-size:13.5px}
+  .nitem:hover{background:var(--bg);color:var(--text)}
+  .nitem.on{background:var(--blue-weak);color:var(--blue);font-weight:600}
+  .nav .sp{flex:1}
+  .nav .foot{border-top:1px solid var(--border);padding-top:10px}
+
+  /* ============ 内容区 ============ */
+  .content{flex:1;min-width:0;overflow-y:auto;padding:22px 26px}
+  .page{max-width:1060px;margin:0 auto}
+  .phd{display:flex;align-items:center;gap:10px;margin-bottom:16px}
+  .phd h2{font-size:17px;font-weight:700}
+  .phd .cnt{font-size:12px;color:var(--text-3)}
+  .phd .sp{flex:1}
+
+  .btn{display:inline-flex;align-items:center;gap:6px;padding:8px 14px;border:1px solid var(--border-2);
+       background:var(--panel);border-radius:8px;cursor:pointer;font-size:13px;font-family:inherit;
+       color:var(--text);font-weight:500;transition:.13s;white-space:nowrap;text-decoration:none}
+  .btn:hover{background:var(--bg)}
+  .btn:active{transform:translateY(.5px)}
+  .btn.primary{background:var(--blue);border-color:var(--blue);color:#fff}
+  .btn.primary:hover{background:#525ce8}
+  .btn.danger{color:var(--red);border-color:#f5c6c6}
+  .btn.danger:hover{background:var(--red-bg)}
+  .btn.sm{padding:5px 10px;font-size:12.5px}
+  .btn:disabled{opacity:.5;cursor:default}
+  .btn svg{width:14px;height:14px;stroke:currentColor;fill:none;stroke-width:2;stroke-linecap:round;stroke-linejoin:round}
+
+  .card{background:var(--panel);border-radius:13px;box-shadow:0 1px 2px rgba(15,18,26,.05);
+        padding:16px 18px;margin-bottom:14px}
+
+  /* 开关 */
+  .sw{position:relative;display:inline-block;width:38px;height:22px;flex-shrink:0;cursor:pointer}
+  .sw input{opacity:0;width:0;height:0}
+  .sw .sl{position:absolute;inset:0;background:#d4d8de;border-radius:999px;transition:.18s}
+  .sw .sl:before{content:"";position:absolute;width:18px;height:18px;left:2px;top:2px;background:#fff;
+                 border-radius:50%;transition:.18s;box-shadow:0 1px 3px rgba(0,0,0,.2)}
+  .sw input:checked+.sl{background:var(--brand)}
+  .sw input:checked+.sl:before{transform:translateX(16px)}
+
+  /* seg */
+  .seg{display:inline-flex;background:var(--bg);border-radius:8px;padding:3px;gap:2px}
+  .seg button{border:none;background:none;padding:5px 12px;border-radius:6px;cursor:pointer;
+              font-size:12.5px;font-family:inherit;color:var(--text-2);font-weight:500}
+  .seg button.on{background:#fff;color:var(--text);box-shadow:0 1px 2px rgba(15,18,26,.1);font-weight:600}
+
+  /* 徽章 */
+  .bdg{display:inline-flex;align-items:center;gap:4px;font-size:11.5px;padding:2px 8px;border-radius:6px;
+       background:var(--bg);color:var(--text-2);white-space:nowrap;max-width:280px;overflow:hidden;text-overflow:ellipsis}
+  .bdg.blue{background:var(--blue-weak);color:var(--blue)}
+  .bdg.green{background:var(--brand-weak);color:var(--brand-d)}
+  .bdg.red{background:var(--red-bg);color:var(--red)}
+  .bdg.amber{background:var(--amber-bg);color:var(--amber)}
+
+  /* ============ 工作流卡片 ============ */
+  .wf-card{background:var(--panel);border-radius:13px;box-shadow:0 1px 2px rgba(15,18,26,.05);
+           padding:15px 18px;margin-bottom:12px;transition:.13s}
+  .wf-card:hover{box-shadow:0 3px 10px rgba(15,18,26,.08)}
+  .wf-card .r1{display:flex;align-items:center;gap:10px}
+  .wf-card .nm{font-size:14.5px;font-weight:650;flex:1;min-width:0;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+  .wf-card .r2{display:flex;align-items:center;gap:6px;flex-wrap:wrap;margin-top:9px}
+  .wf-card .lbl{font-size:11.5px;color:var(--text-3);margin-right:2px;flex-shrink:0}
+  .wf-card .r3{display:flex;align-items:center;gap:12px;margin-top:10px;padding-top:10px;border-top:1px solid var(--border)}
+  .wf-card .st{font-size:11.5px;color:var(--text-3)}
+  .wf-card .sp{flex:1}
+
+  .empty{background:var(--panel);border-radius:13px;padding:52px 20px;text-align:center;
+         color:var(--text-3);font-size:13px;line-height:2}
+  .empty svg{width:44px;height:44px;stroke:#d3d7dd;fill:none;stroke-width:1.3;
+             stroke-linecap:round;stroke-linejoin:round;margin-bottom:6px}
+
+  /* ============ 表格(运行记录) ============ */
+  table{width:100%;border-collapse:collapse;font-size:12.5px}
+  th{text-align:left;color:var(--text-3);font-weight:500;font-size:11.5px;padding:8px 10px;
+     border-bottom:1px solid var(--border);white-space:nowrap}
+  td{padding:9px 10px;border-bottom:1px solid var(--border);vertical-align:top}
+  tr:last-child td{border-bottom:none}
+  td .c1{white-space:nowrap;color:var(--text-3);font-variant-numeric:tabular-nums}
+  .rdetail{font-size:11.5px;color:var(--text-3);margin-top:3px;line-height:1.5}
+
+  /* ============ 统计卡 ============ */
+  .grid{display:grid;grid-template-columns:repeat(auto-fill,minmax(160px,1fr));gap:12px}
+  .stat{background:var(--panel);border-radius:12px;padding:14px 16px;box-shadow:0 1px 2px rgba(15,18,26,.05)}
+  .stat .k{font-size:11.5px;color:var(--text-3)}
+  .stat .v{font-size:20px;font-weight:700;margin-top:3px;font-variant-numeric:tabular-nums}
+  .stat .v.sm{font-size:14px;font-weight:600}
+  .logs{background:#16181d;border-radius:12px;padding:14px 16px;font-family:var(--mono);
+        font-size:12px;line-height:1.8;color:#c8cdd6;max-height:420px;overflow-y:auto}
+  .logs .lw{color:#e8b04b}.logs .le{color:#f07575}.logs .lt{color:#5c9ded;margin-right:8px}
+
+  /* ============ 原始推送 ============ */
+  .warnbar{background:var(--amber-bg);color:var(--amber);border-radius:10px;
+           padding:11px 14px;font-size:12.5px;line-height:1.65;margin-bottom:14px}
+  .warnbar b{font-weight:700}
+  .rawsel{width:auto;min-width:150px;padding:6px 10px;font-size:12.5px}
+  .nitem .dot{width:6px;height:6px;border-radius:50%;background:var(--brand);margin-left:6px}
+
+  .rawit{background:var(--panel);border-radius:11px;margin-bottom:8px;overflow:hidden;
+         box-shadow:0 1px 2px rgba(15,18,26,.05)}
+  .rawhd{display:flex;align-items:center;gap:10px;padding:10px 14px;cursor:pointer;
+         font-size:12.5px;transition:.13s;user-select:none}
+  .rawhd:hover{background:var(--bg)}
+  .rawhd .tm{color:var(--text-3);font-family:var(--mono);font-size:11.5px;flex-shrink:0}
+  .rawhd .tp{font-family:var(--mono);font-weight:700;color:var(--blue);flex-shrink:0}
+  .rawhd .nm{font-weight:600}
+  .rawhd .tag{font-size:10.5px;padding:2px 7px;border-radius:999px;flex-shrink:0;font-weight:600}
+  .rawhd .tag.ok{background:var(--brand-weak);color:var(--brand-d)}
+  .rawhd .tag.no{background:var(--amber-bg);color:var(--amber)}
+  .rawhd .pv{color:var(--text-3);font-family:var(--mono);font-size:11px;
+             white-space:nowrap;overflow:hidden;text-overflow:ellipsis;min-width:0;flex:1}
+  .rawhd .cp{margin-left:auto;flex-shrink:0;font-size:11px;color:var(--text-3);
+             padding:3px 9px;border-radius:6px;border:1px solid var(--border-2);background:#fff}
+  .rawhd .cp:hover{color:var(--brand);border-color:var(--brand)}
+  .rawbd{display:none;background:#16181d;color:#c8cdd6;font-family:var(--mono);
+         font-size:11.5px;line-height:1.7;padding:13px 16px;overflow-x:auto;
+         max-height:440px;overflow-y:auto;white-space:pre}
+  .rawit.open .rawbd{display:block}
+
+  /* ============ 表单 ============ */
+  .ffield{margin-bottom:14px}
+  .ffield .lab{font-size:12.5px;font-weight:600;margin-bottom:6px;display:flex;align-items:center;gap:8px}
+  .ffield .lab .tip{font-weight:400;color:var(--text-3);font-size:11.5px}
+  input[type=text],input[type=number],select,textarea{
+    width:100%;padding:8px 12px;border:1px solid var(--border-2);border-radius:8px;
+    font-size:13px;font-family:inherit;background:#fff;color:var(--text);transition:.13s}
+  textarea{resize:vertical;line-height:1.55}
+  input:focus,select:focus,textarea:focus{outline:none;border-color:var(--blue);
+    box-shadow:0 0 0 3px var(--blue-weak)}
+  .frow{display:flex;gap:12px}
+  .frow>.ffield{flex:1}
+
+  /* ============ 折叠条件行 ============ */
+  .crow{background:var(--bg);border-radius:10px;margin-bottom:8px;overflow:hidden}
+  .crow-hd{display:flex;align-items:center;gap:10px;padding:11px 14px;cursor:pointer;user-select:none}
+  .crow-hd .pm{width:16px;height:16px;color:var(--text-3);flex-shrink:0;display:grid;place-items:center;
+               font-size:15px;font-weight:500;line-height:1}
+  .crow-hd .t{font-size:13px;font-weight:600;flex-shrink:0}
+  .crow-hd .hint{flex:1;text-align:right;font-size:12px;color:var(--text-3);
+                 white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+  .crow-hd .hint .set{color:var(--blue);font-weight:500}
+  .crow-bd{display:none;padding:2px 14px 13px}
+  .crow.open .crow-bd{display:block}
+  .crow.open .crow-hd .pm:before{content:"−"}
+  .crow:not(.open) .crow-hd .pm:before{content:"+"}
+
+  /* ============ 多选器 ============ */
+  .msel{background:#fff;border:1px solid var(--border-2);border-radius:9px;overflow:hidden}
+  .msel-hd{display:flex;align-items:center;gap:8px;padding:7px 10px;border-bottom:1px solid var(--border)}
+  .msel-hd input{border:none;padding:2px 4px;font-size:12.5px;flex:1;box-shadow:none!important}
+  .msel-hd .cnt{font-size:11px;color:var(--text-3);white-space:nowrap}
+  .msel-list{max-height:170px;overflow-y:auto;padding:4px}
+  .msel-it{display:flex;align-items:center;gap:8px;padding:6px 9px;border-radius:7px;cursor:pointer;font-size:12.5px}
+  .msel-it:hover{background:var(--bg)}
+  .msel-it.on{background:var(--blue-weak)}
+  .msel-it.on:hover{background:var(--blue-weak)}
+  .msel-it input{width:auto;box-shadow:none!important}
+  .msel-it .tg{font-size:10px;color:var(--text-3);border:1px solid var(--border-2);border-radius:4px;padding:0 4px}
+  .msel-it .idt{color:var(--text-3);font-size:11px;margin-left:auto;font-family:var(--mono)}
+  .msel-ft{display:flex;gap:6px;padding:7px 10px;border-top:1px solid var(--border)}
+  .msel-ft input{font-size:12px;padding:5px 9px}
+  .msel-none{padding:16px;text-align:center;color:var(--text-3);font-size:12px}
+
+  /* chips */
+  .chips{display:flex;flex-wrap:wrap;gap:6px;padding:7px 9px;background:#fff;
+         border:1px solid var(--border-2);border-radius:9px;min-height:40px}
+  .chips:focus-within{border-color:var(--blue);box-shadow:0 0 0 3px var(--blue-weak)}
+  .chip{display:inline-flex;align-items:center;gap:5px;background:var(--blue-weak);color:var(--blue);
+        border-radius:6px;padding:3px 8px;font-size:12px;font-weight:500}
+  .chip b{cursor:pointer;font-weight:600;opacity:.7}
+  .chip b:hover{opacity:1}
+  .chips input{border:none!important;box-shadow:none!important;flex:1;min-width:120px;padding:3px;font-size:12.5px}
+
+  /* ============ 动作卡片 ============ */
+  .act{border:1px solid var(--border-2);border-radius:11px;margin-bottom:10px;background:#fff}
+  .act-hd{display:flex;align-items:center;gap:9px;padding:10px 14px;border-bottom:1px solid var(--border)}
+  .act-hd .tt{font-weight:650;font-size:13px;display:flex;align-items:center;gap:7px}
+  .act-hd .no{width:20px;height:20px;border-radius:6px;background:var(--blue-weak);color:var(--blue);
+              display:grid;place-items:center;font-size:11.5px;font-weight:700}
+  .act-hd .sp{flex:1}
+  .act-hd .ab{width:26px;height:26px;border-radius:7px;display:grid;place-items:center;cursor:pointer;
+              color:var(--text-3);border:none;background:none}
+  .act-hd .ab:hover{background:var(--bg);color:var(--text)}
+  .act-hd .ab.del:hover{color:var(--red);background:var(--red-bg)}
+  .act-bd{padding:13px 14px 5px}
+
+  /* ============ 抽屉编辑器 ============ */
+  .mask{position:fixed;inset:0;background:rgba(18,20,26,.42);z-index:100;display:none;
+        backdrop-filter:blur(2px)}
+  .mask.on{display:block}
+  .drawer{position:fixed;top:0;right:0;bottom:0;width:800px;max-width:94vw;background:var(--bg);
+          z-index:101;display:none;flex-direction:column;box-shadow:var(--sh-pop)}
+  .drawer.on{display:flex}
+  .d-hd{display:flex;align-items:center;gap:10px;padding:15px 22px;background:var(--panel);
+        border-bottom:1px solid var(--border);flex-shrink:0}
+  .d-hd h3{font-size:15.5px;font-weight:700;flex:1}
+  .d-bd{flex:1;overflow-y:auto;padding:18px 22px}
+  .d-ft{display:flex;gap:10px;padding:13px 22px;background:var(--panel);
+        border-top:1px solid var(--border);flex-shrink:0}
+  .d-ft .sp{flex:1}
+  .sec{font-size:12px;font-weight:700;color:var(--text-3);letter-spacing:.5px;margin:20px 0 9px}
+  .sec:first-child{margin-top:0}
+  .varhint{font-size:11.5px;color:var(--text-3);margin-top:5px;line-height:1.6}
+  .varhint code{background:var(--bg);border-radius:4px;padding:1px 5px;font-family:var(--mono);font-size:11px}
+
+  /* 测试结果 */
+  .tres{border-radius:10px;padding:12px 14px;font-size:12.5px;margin-top:10px;line-height:1.7;background:#fff}
+  .tres.okk{background:var(--brand-weak)}
+  .tres.no{background:var(--amber-bg)}
+  .tres .ln{display:flex;gap:8px;align-items:flex-start}
+  .tres .ln .b{flex-shrink:0}
+
+  /* ============ 步骤条 ============ */
+  .steps{display:flex;align-items:center;gap:0;padding:14px 22px 0;background:var(--panel);flex-shrink:0}
+  .step{display:flex;align-items:center;gap:8px;cursor:pointer;padding:4px 2px;border:none;
+        background:none;font-family:inherit;color:var(--text-3);font-size:13px;font-weight:500}
+  .step .sn{width:22px;height:22px;border-radius:50%;display:grid;place-items:center;flex-shrink:0;
+            font-size:11.5px;font-weight:700;background:var(--bg);color:var(--text-3);
+            border:1.5px solid var(--border-2);transition:.15s}
+  .step.on{color:var(--text)}
+  .step.on .sn{background:var(--blue);border-color:var(--blue);color:#fff;
+               box-shadow:0 0 0 3px var(--blue-weak)}
+  .step.done .sn{background:var(--brand);border-color:var(--brand);color:#fff}
+  .step.done .sn:before{content:"✓";font-size:12px}
+  .step.done .sn i{display:none}
+  .step:hover:not(.on){color:var(--text-2)}
+  .sline{flex:1;height:1.5px;background:var(--border-2);margin:0 10px;min-width:14px}
+  .sline.done{background:var(--brand)}
+  .req{font-size:10px;font-weight:600;color:var(--red);vertical-align:super;margin-left:2px}
+
+  /* ============ 规则预览条 ============ */
+  .sumbar{display:flex;align-items:flex-start;gap:9px;margin:13px 22px 0;padding:11px 13px;
+          background:linear-gradient(180deg,#fbfbfd,var(--panel));border:1px solid var(--border);
+          border-radius:11px;flex-shrink:0;font-size:12.5px;line-height:1.75}
+  .sumbar .si{width:18px;height:18px;color:var(--blue);flex-shrink:0;margin-top:1px}
+  .sumbar .si svg{width:18px;height:18px;stroke:currentColor;fill:none;stroke-width:1.8;
+                  stroke-linecap:round;stroke-linejoin:round}
+  .sumbar .sx{flex:1;min-width:0;color:var(--text-2)}
+  .sumbar b{color:var(--text);font-weight:650}
+  .sumbar .kw{background:var(--blue-weak);color:var(--blue);border-radius:5px;padding:1px 6px;font-weight:600}
+  .sumbar .miss{background:var(--red-bg);color:var(--red);border-radius:5px;padding:1px 6px;font-weight:600}
+
+  /* ============ 分步面板 ============ */
+  .dpane{display:none}
+  .dpane.on{display:block}
+  .ptip{display:flex;gap:8px;align-items:flex-start;font-size:12px;color:var(--text-3);
+        line-height:1.7;margin:0 0 14px}
+
+  /* 条件行图标 + 已设置态 */
+  .crow-hd .ci{width:16px;height:16px;color:var(--text-3);flex-shrink:0}
+  .crow-hd .ci svg{width:16px;height:16px;stroke:currentColor;fill:none;stroke-width:1.8;
+                   stroke-linecap:round;stroke-linejoin:round}
+  .crow.set{background:var(--blue-weak)}
+  .crow.set .crow-hd .ci{color:var(--blue)}
+  .crow.set .crow-hd .t{color:var(--blue)}
+
+  /* 添加动作的大方块 */
+  .addtiles{display:grid;grid-template-columns:1fr 1fr;gap:10px}
+  .addtile{border:1.5px dashed var(--border-2);border-radius:12px;padding:15px 16px;cursor:pointer;
+           background:var(--panel);transition:.14s;text-align:left;font-family:inherit;display:flex;
+           align-items:center;gap:11px}
+  .addtile:hover{border-color:var(--blue);border-style:solid;background:var(--blue-weak)}
+  .addtile .ai{width:32px;height:32px;border-radius:9px;display:grid;place-items:center;flex-shrink:0}
+  .addtile .ai svg{width:17px;height:17px;stroke:currentColor;fill:none;stroke-width:1.9;
+                   stroke-linecap:round;stroke-linejoin:round}
+  .addtile .ai.g{background:var(--brand-weak);color:var(--brand-d)}
+  .addtile .ai.b{background:var(--blue-weak);color:var(--blue)}
+  .addtile .an{font-size:13.5px;font-weight:650}
+  .addtile .ad{font-size:11.5px;color:var(--text-3);margin-top:2px;line-height:1.5}
+
+  /* ============ 触发方式切换 ============ */
+  .kinds{display:grid;grid-template-columns:1fr 1fr;gap:10px;margin-bottom:4px}
+  .kind{border:1.5px solid var(--border-2);border-radius:12px;padding:13px 15px;cursor:pointer;
+        background:var(--panel);transition:.14s;text-align:left;font-family:inherit;display:flex;
+        align-items:center;gap:11px}
+  .kind:hover{border-color:var(--blue)}
+  .kind.on{border-color:var(--blue);background:var(--blue-weak);
+           box-shadow:0 0 0 3px rgba(99,109,240,.1)}
+  .kind .ki{width:32px;height:32px;border-radius:9px;display:grid;place-items:center;flex-shrink:0;
+            background:var(--bg);color:var(--text-3)}
+  .kind.on .ki{background:#fff;color:var(--blue)}
+  .kind .ki svg{width:17px;height:17px;stroke:currentColor;fill:none;stroke-width:1.9;
+                stroke-linecap:round;stroke-linejoin:round}
+  .kind .kn{font-size:13.5px;font-weight:650;display:block}
+  .kind.on .kn{color:var(--blue)}
+  .kind .kd{font-size:11.5px;color:var(--text-3);line-height:1.5;display:block;margin-top:2px}
+
+  /* 星期多选 */
+  .wds{display:flex;gap:6px;flex-wrap:wrap}
+  .wd{display:inline-flex;align-items:center;gap:5px;padding:6px 11px;border-radius:8px;cursor:pointer;
+      background:var(--bg);font-size:12.5px;color:var(--text-2);border:1px solid transparent;transition:.13s}
+  .wd:hover{border-color:var(--border-2)}
+  .wd.on{background:var(--blue-weak);color:var(--blue);font-weight:600;border-color:var(--blue)}
+  .wd input{width:auto;box-shadow:none!important}
+  input[type=time],input[type=date]{width:100%;padding:8px 12px;border:1px solid var(--border-2);
+    border-radius:8px;font-size:13px;font-family:inherit;background:#fff;color:var(--text)}
+
+  /* 下次触发提示 */
+  .nextfire{font-size:12.5px;color:var(--brand-d);background:var(--brand-weak);border-radius:9px;
+            padding:9px 12px;margin-top:2px}
+  .nextfire.warn{color:var(--amber);background:var(--amber-bg)}
+
+  /* 动作卡片按类型着色 */
+  .act.fw{border-left:3px solid var(--brand)}
+  .act.ht{border-left:3px solid var(--blue)}
+  .act-hd .ty{width:22px;height:22px;border-radius:7px;display:grid;place-items:center;flex-shrink:0}
+  .act-hd .ty svg{width:13px;height:13px;stroke:currentColor;fill:none;stroke-width:2;
+                  stroke-linecap:round;stroke-linejoin:round}
+  .act-hd .ty.g{background:var(--brand-weak);color:var(--brand-d)}
+  .act-hd .ty.b{background:var(--blue-weak);color:var(--blue)}
+
+  .toast{position:fixed;bottom:26px;left:50%;transform:translateX(-50%) translateY(8px);
+         background:#181b21;color:#fff;padding:11px 20px;border-radius:10px;font-size:13px;
+         z-index:300;opacity:0;transition:.24s;pointer-events:none;box-shadow:var(--sh-pop);font-weight:500}
+  .toast.on{opacity:1;transform:translateX(-50%) translateY(0)}
+  .hide{display:none!important}
+  ::-webkit-scrollbar{width:8px}
+  ::-webkit-scrollbar-thumb{background:#d5d9df;border-radius:4px}
+</style>
+</head>
+<body>
+
+<svg width="0" height="0" style="position:absolute" aria-hidden="true"><defs>
+  <symbol id="i-flow" viewBox="0 0 24 24"><rect x="2" y="3" width="7" height="6" rx="2"/><rect x="15" y="15" width="7" height="6" rx="2"/><path d="M9 6h4a2 2 0 0 1 2 2v7"/><path d="m12 12 3 3 3-3"/></symbol>
+  <symbol id="i-list" viewBox="0 0 24 24"><path d="M8 6h13M8 12h13M8 18h13"/><path d="M3 6h.01M3 12h.01M3 18h.01"/></symbol>
+  <symbol id="i-monitor" viewBox="0 0 24 24"><path d="M22 12h-4l-3 9L9 3l-3 9H2"/></symbol>
+  <symbol id="i-gear" viewBox="0 0 24 24"><circle cx="12" cy="12" r="3"/><path d="M19.4 15a1.65 1.65 0 0 0 .33 1.82l.06.06a2 2 0 1 1-2.83 2.83l-.06-.06a1.65 1.65 0 0 0-1.82-.33 1.65 1.65 0 0 0-1 1.51V21a2 2 0 1 1-4 0v-.09A1.65 1.65 0 0 0 9 19.4a1.65 1.65 0 0 0-1.82.33l-.06.06a2 2 0 1 1-2.83-2.83l.06-.06a1.65 1.65 0 0 0 .33-1.82 1.65 1.65 0 0 0-1.51-1H3a2 2 0 1 1 0-4h.09A1.65 1.65 0 0 0 4.6 9a1.65 1.65 0 0 0-.33-1.82l-.06-.06a2 2 0 1 1 2.83-2.83l.06.06a1.65 1.65 0 0 0 1.82.33H9a1.65 1.65 0 0 0 1-1.51V3a2 2 0 1 1 4 0v.09a1.65 1.65 0 0 0 1 1.51 1.65 1.65 0 0 0 1.82-.33l.06-.06a2 2 0 1 1 2.83 2.83l-.06.06a1.65 1.65 0 0 0-.33 1.82V9a1.65 1.65 0 0 0 1.51 1H21a2 2 0 1 1 0 4h-.09a1.65 1.65 0 0 0-1.51 1z"/></symbol>
+  <symbol id="i-chat" viewBox="0 0 24 24"><path d="M21 15a2 2 0 0 1-2 2H7l-4 4V5a2 2 0 0 1 2-2h14a2 2 0 0 1 2 2z"/></symbol>
+  <symbol id="i-plus" viewBox="0 0 24 24"><path d="M12 5v14M5 12h14"/></symbol>
+  <symbol id="i-x" viewBox="0 0 24 24"><path d="M18 6 6 18M6 6l12 12"/></symbol>
+  <symbol id="i-trash" viewBox="0 0 24 24"><path d="M3 6h18"/><path d="M19 6v14a2 2 0 0 1-2 2H7a2 2 0 0 1-2-2V6"/><path d="M8 6V4a2 2 0 0 1 2-2h4a2 2 0 0 1 2 2v2"/></symbol>
+  <symbol id="i-copy" viewBox="0 0 24 24"><rect x="9" y="9" width="13" height="13" rx="2"/><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1"/></symbol>
+  <symbol id="i-edit" viewBox="0 0 24 24"><path d="M17 3a2.85 2.83 0 1 1 4 4L7.5 20.5 2 22l1.5-5.5z"/></symbol>
+  <symbol id="i-play" viewBox="0 0 24 24"><polygon points="5 3 19 12 5 21 5 3"/></symbol>
+  <symbol id="i-up" viewBox="0 0 24 24"><path d="m18 15-6-6-6 6"/></symbol>
+  <symbol id="i-down" viewBox="0 0 24 24"><path d="m6 9 6 6 6-6"/></symbol>
+  <symbol id="i-sync" viewBox="0 0 24 24"><path d="M21 12a9 9 0 1 1-2.64-6.36"/><path d="M21 3v6h-6"/></symbol>
+  <symbol id="i-back" viewBox="0 0 24 24"><path d="m15 18-6-6 6-6"/></symbol>
+  <symbol id="i-fwd" viewBox="0 0 24 24"><path d="m15 17 5-5-5-5"/><path d="M4 18v-2a4 4 0 0 1 4-4h12"/></symbol>
+  <symbol id="i-api" viewBox="0 0 24 24"><path d="M10 13a5 5 0 0 0 7.5.5l3-3a5 5 0 0 0-7-7l-1.8 1.8"/><path d="M14 11a5 5 0 0 0-7.5-.5l-3 3a5 5 0 0 0 7 7L12 19"/></symbol>
+  <symbol id="i-bolt" viewBox="0 0 24 24"><path d="M13 2 4.1 12.9a1 1 0 0 0 .8 1.6H11l-1 7.5 8.9-10.9a1 1 0 0 0-.8-1.6H12z"/></symbol>
+  <symbol id="i-users" viewBox="0 0 24 24"><path d="M16 21v-2a4 4 0 0 0-4-4H6a4 4 0 0 0-4 4v2"/><circle cx="9" cy="7" r="4"/><path d="M22 21v-2a4 4 0 0 0-3-3.87"/></symbol>
+  <symbol id="i-at" viewBox="0 0 24 24"><circle cx="12" cy="12" r="4"/><path d="M16 8v5a3 3 0 0 0 6 0v-1a10 10 0 1 0-3.9 7.9"/></symbol>
+  <symbol id="i-file" viewBox="0 0 24 24"><path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z"/><path d="M14 2v6h6"/></symbol>
+  <symbol id="i-search" viewBox="0 0 24 24"><circle cx="11" cy="11" r="7"/><path d="m20 20-3.5-3.5"/></symbol>
+  <symbol id="i-arrow" viewBox="0 0 24 24"><path d="M5 12h14"/><path d="m12 5 7 7-7 7"/></symbol>
+  <symbol id="i-clock" viewBox="0 0 24 24"><circle cx="12" cy="12" r="9"/><path d="M12 7v5l3.5 2"/></symbol>
+  <symbol id="i-msg" viewBox="0 0 24 24"><path d="M21 11.5a8.4 8.4 0 0 1-.9 3.8 8.5 8.5 0 0 1-7.6 4.7 8.4 8.4 0 0 1-3.8-.9L3 21l1.9-5.7a8.4 8.4 0 0 1-.9-3.8 8.5 8.5 0 0 1 4.7-7.6 8.4 8.4 0 0 1 3.8-.9h.5a8.5 8.5 0 0 1 8 8z"/></symbol>
+</defs></svg>
+
+<!-- ============ 左侧导航 ============ -->
+<nav class="nav">
+  <div class="brand"><div class="logo"><svg><use href="#i-gear"/></svg></div><b>管理后台</b></div>
+  <div class="nitem on" data-pane="flow"><svg class="ic"><use href="#i-flow"/></svg>工作流</div>
+  <div class="nitem" data-pane="runs"><svg class="ic"><use href="#i-list"/></svg>运行记录</div>
+  <div class="nitem" data-pane="status"><svg class="ic"><use href="#i-monitor"/></svg>状态监控</div>
+  <div class="nitem" data-pane="raw"><svg class="ic"><use href="#i-list"/></svg>原始推送<span class="dot hide" id="rawDot"></span></div>
+  <div class="nitem" data-pane="setting"><svg class="ic"><use href="#i-gear"/></svg>系统设置</div>
+  <div class="sp"></div>
+  <div class="foot"><a class="nitem" href="/"><svg class="ic"><use href="#i-back"/></svg>返回会话</a></div>
+</nav>
+
+<!-- ============ 内容 ============ -->
+<div class="content">
+
+  <!-- 工作流 -->
+  <section class="page" id="pane-flow">
+    <div class="phd">
+      <h2>工作流</h2><span class="cnt" id="wfCnt"></span>
+      <div class="sp"></div>
+      <button class="btn" id="btnSyncPicker"><svg><use href="#i-sync"/></svg>同步通讯录</button>
+      <button class="btn primary" id="btnNewWf"><svg><use href="#i-plus"/></svg>新建工作流</button>
+    </div>
+    <div id="wfList"></div>
+  </section>
+
+  <!-- 运行记录 -->
+  <section class="page hide" id="pane-runs">
+    <div class="phd">
+      <h2>运行记录</h2><span class="cnt" id="runCnt"></span>
+      <div class="sp"></div>
+      <button class="btn sm" id="btnRunRefresh"><svg><use href="#i-sync"/></svg>刷新</button>
+    </div>
+    <div class="card" style="padding:6px 10px"><div style="overflow-x:auto">
+      <table>
+        <thead><tr><th style="width:76px">时间</th><th>工作流</th><th>来源 / 发送人</th><th>消息</th><th style="width:280px">执行结果</th></tr></thead>
+        <tbody id="runBody"></tbody>
+      </table>
+    </div>
+    <div id="runMore" class="hide" style="text-align:center;padding:10px 0 4px">
+      <button class="btn sm" id="btnRunMore"><svg><use href="#i-list"/></svg>加载更早的记录</button>
+    </div>
+    <div class="empty hide" id="runEmpty" style="box-shadow:none"><svg><use href="#i-list"/></svg><br>还没有触发记录<br>命中工作流的消息会出现在这里</div>
+    </div>
+  </section>
+
+  <!-- 状态监控 -->
+  <section class="page hide" id="pane-status">
+    <div class="phd"><h2>状态监控</h2><div class="sp"></div>
+      <button class="btn sm" id="btnLogRefresh"><svg><use href="#i-sync"/></svg>刷新</button></div>
+    <div class="grid" id="statGrid"></div>
+    <div class="sec" style="margin:18px 0 9px;font-size:12px;font-weight:700;color:var(--text-3)">运行日志</div>
+    <div class="logs" id="logBox"></div>
+  </section>
+
+  <!-- 系统设置 -->
+  <section class="page hide" id="pane-setting">
+    <div class="phd"><h2>系统设置</h2></div>
+    <div class="card">
+      <div class="sec">DLL 与端口</div>
+      <div class="ffield"><div class="lab">Loader DLL 路径</div>
+        <input type="text" id="cfgLoader" placeholder="./WxWorkLoader.dll"></div>
+      <div class="ffield"><div class="lab">Helper DLL 路径</div>
+        <input type="text" id="cfgHelper" placeholder="./WxWorkHelper.dll"></div>
+      <div class="ffield"><div class="lab">企业微信 EXE<span class="tip">留空自动查找</span></div>
+        <input type="text" id="cfgExe" placeholder="留空即可"></div>
+      <div class="frow">
+        <div class="ffield"><div class="lab">网关端口<span class="tip">改动需重启</span></div>
+          <input type="number" id="cfgPort" placeholder="9000"></div>
+        <div class="ffield"><div class="lab">每会话保留消息数<span class="tip">0=不限制，改动需重启</span></div>
+          <input type="number" id="cfgKeep" placeholder="5000"></div>
+      </div>
+      <div class="sec">健康检查与告警</div>
+      <div class="ffield"><div class="lab">启用健康检查
+        <label class="sw"><input type="checkbox" id="cfgHcOn"><span class="sl"></span></label></div></div>
+      <div class="frow">
+        <div class="ffield"><div class="lab">检查间隔(秒)</div>
+          <input type="number" id="cfgHcInt" min="10" placeholder="60"></div>
+        <div class="ffield"><div class="lab">恢复时也通知
+          <label class="sw"><input type="checkbox" id="cfgHcRec"><span class="sl"></span></label></div></div>
+      </div>
+      <div class="ffield"><div class="lab">企微机器人 Webhook<span class="tip">掉线时推送告警</span></div>
+        <input type="text" id="cfgHook" placeholder="https://qyapi.weixin.qq.com/cgi-bin/webhook/send?key=xxx"></div>
+      <div class="sec">调试</div>
+      <div class="ffield"><div class="lab">抓取原始推送
+        <span class="tip">把 DLL 回调的每条通知原样留在内存，供「原始推送」页查看</span>
+        <label class="sw"><input type="checkbox" id="cfgRawOn"><span class="sl"></span></label></div></div>
+      <div class="ffield"><div class="lab">保留条数<span class="tip">仅内存，不写数据库；重启即清空</span></div>
+        <input type="number" id="cfgRawMax" min="20" max="1000" placeholder="300"></div>
+      <div class="warnbar" id="rawWarn">
+        原始推送含<b>消息原文</b>和 <b>CDN 凭证(aes_key / auth_key)</b>。仅在排查问题时打开，开放公网访问前请务必关闭。
+      </div>
+      <div style="display:flex;gap:10px;margin-top:16px">
+        <button class="btn primary" id="btnSaveCfg">保存设置</button>
+        <button class="btn" id="btnTestHook">发送测试消息</button>
+      </div>
+    </div>
+  </section>
+
+  <!-- 原始推送 -->
+  <section class="page hide" id="pane-raw">
+    <div class="phd">
+      <h2>原始推送</h2><span class="cnt" id="rawCnt"></span>
+      <div class="sp"></div>
+      <select id="rawFilter" class="rawsel"><option value="">全部类型</option></select>
+      <label class="sw" title="抓取开关"><input type="checkbox" id="rawToggle"><span class="sl"></span></label>
+      <button class="btn sm" id="btnRawClear"><svg><use href="#i-list"/></svg>清空</button>
+    </div>
+    <div class="warnbar hide" id="rawOff">
+      抓取已关闭。打开右上角开关（或到「系统设置 → 调试」）后，DLL 的每一条回调都会原样出现在这里。
+    </div>
+    <div id="rawList"></div>
+    <div class="empty hide" id="rawEmpty" style="box-shadow:none">
+      <svg><use href="#i-list"/></svg><br>还没有收到推送<br>企微来消息后会实时出现在这里
+    </div>
+  </section>
+</div>
+
+<!-- ============ 工作流编辑抽屉 ============ -->
+<div class="mask" id="mask"></div>
+<div class="drawer" id="drawer">
+  <div class="d-hd">
+    <h3 id="dTitle">新建工作流</h3>
+    <span style="font-size:12px;color:var(--text-3)">启用</span>
+    <label class="sw"><input type="checkbox" id="fOn" checked><span class="sl"></span></label>
+    <button class="btn sm" id="btnClose" style="border:none"><svg><use href="#i-x"/></svg></button>
+  </div>
+  <!-- 步骤条 -->
+  <div class="steps" id="dSteps">
+    <button class="step on" data-s="1"><span class="sn"><i>1</i></span>触发条件</button>
+    <div class="sline" data-l="1"></div>
+    <button class="step" data-s="2"><span class="sn"><i>2</i></span>执行动作<span class="req">必填</span></button>
+    <div class="sline" data-l="2"></div>
+    <button class="step" data-s="3"><span class="sn"><i>3</i></span>高级与测试</button>
+  </div>
+  <!-- 实时规则预览 -->
+  <div class="sumbar" id="dSum">
+    <span class="si"><svg><use href="#i-bolt"/></svg></span>
+    <span class="sx" id="dSumTx"></span>
+  </div>
+  <div class="d-bd" id="dBody"><!-- JS 渲染 --></div>
+  <div class="d-ft">
+    <button class="btn danger hide" id="btnDel"><svg><use href="#i-trash"/></svg>删除</button>
+    <button class="btn hide" id="btnPrev"><svg><use href="#i-back"/></svg>上一步</button>
+    <div class="sp"></div>
+    <button class="btn" id="btnTest"><svg><use href="#i-play"/></svg>测试</button>
+    <button class="btn" id="btnCancel">取消</button>
+    <button class="btn primary hide" id="btnNext">下一步<svg><use href="#i-arrow"/></svg></button>
+    <button class="btn primary" id="btnSave">保存</button>
+  </div>
+</div>
+
+<div class="toast" id="toast"></div>
+
+<script>
+// ==================== 基础 ====================
+const $=s=>document.querySelector(s), $$=s=>[...document.querySelectorAll(s)];
+const api=async(p,body)=>{
+  const opt=body?{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(body)}:{};
+  const r=await fetch(p,opt); return r.json();
+};
+function toast(t){const el=$('#toast');el.textContent=t;el.classList.add('on');
+  setTimeout(()=>el.classList.remove('on'),2400);}
+const esc=s=>String(s??'').replace(/[&<>"]/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;'}[c]));
+const fmtT=ts=>{if(!ts)return '—';const d=new Date(ts*1000),n=new Date();
+  const hm=`${String(d.getHours()).padStart(2,'0')}:${String(d.getMinutes()).padStart(2,'0')}:${String(d.getSeconds()).padStart(2,'0')}`;
+  return d.toDateString()===n.toDateString()?hm:`${d.getMonth()+1}/${d.getDate()} ${hm}`;};
+// 未来时间点(下次触发)：今天只显示 时:分，跨天带上日期
+const fmtDT=ts=>{if(!ts)return '—';const d=new Date(ts*1000),n=new Date(),p=x=>String(x).padStart(2,'0');
+  const hm=`${p(d.getHours())}:${p(d.getMinutes())}`;
+  return d.toDateString()===n.toDateString()?`今天 ${hm}`:`${d.getMonth()+1}/${d.getDate()} ${hm}`;};
+
+const MSG_TYPES=[[2,'文本'],[101,'图片'],[102,'文件'],[103,'视频'],[16,'语音'],[13,'卡片链接'],[6,'位置']];
+const mtName=v=>(MSG_TYPES.find(x=>x[0]===v)||[v,'类型'+v])[1];
+
+// ==================== 全局数据 ====================
+let WORKFLOWS=[], RUNS=[], RUN_MORE=false, GROUPS=[], CONTACTS=[], SESSIONS=[];
+const MEMCACHE={};        // {群id:[{id,name}]} 群成员缓存，只在缺失或手动刷新时才请求
+let PICKER=[];            // 合并去重后的会话/联系人选项 [{id,name,tag}]
+let M=null;               // 正在编辑的工作流模型
+let STEP=1, IS_NEW=false; // 编辑器当前步骤 / 是否新建(新建走分步引导)
+let MSEL={};              // 多选器/chips 注册表
+
+function buildPicker(){
+  const map=new Map();
+  GROUPS.forEach(g=>g.id&&map.set(g.id,{id:g.id,name:g.name||g.id,
+    tag:String(g.is_external)==='1'?'外部群':'群'}));
+  CONTACTS.forEach(c=>c.id&&!map.has(c.id)&&map.set(c.id,{id:c.id,name:c.name||c.id,
+    tag:c.is_external?'外部':'同事'}));
+  SESSIONS.forEach(s=>s.id&&!map.has(s.id)&&map.set(s.id,{id:s.id,name:s.name||s.id,tag:s.is_group?'群':'人'}));
+  PICKER=[...map.values()];
+}
+async function loadPicker(){
+  const [g,c,s]=await Promise.all([
+    api('gw/groups').catch(()=>({})), api('gw/contacts').catch(()=>({})),
+    api('gw/sessions').catch(()=>({}))]);
+  GROUPS=g.list||[]; CONTACTS=c.list||[]; SESSIONS=s.list||[];
+  buildPicker();
+}
+
+// ==================== 导航 ====================
+$$('.nitem[data-pane]').forEach(el=>el.onclick=()=>{
+  $$('.nitem[data-pane]').forEach(x=>x.classList.toggle('on',x===el));
+  // 从导航项推导页签列表，避免新增面板时忘了同步这里
+  $$('.nitem[data-pane]').forEach(x=>{
+    const pane=$('#pane-'+x.dataset.pane);
+    if(pane) pane.classList.toggle('hide',x.dataset.pane!==el.dataset.pane);
+  });
+  if(el.dataset.pane==='runs') loadRuns();
+  if(el.dataset.pane==='status'){loadStatus();loadLogs();}
+  if(el.dataset.pane==='setting') loadCfg();
+  if(el.dataset.pane==='raw'){$('#rawDot').classList.add('hide');loadRaw(false);}
+});
+
+// ==================== 工作流列表 ====================
+async function loadWfs(){
+  const j=await api('gw/workflows'); WORKFLOWS=j.workflows||[]; renderWfs();
+}
+function trigSummary(w){
+  const t=w.trigger||{},c=t.content||{},out=[];
+  if(t.kind==='schedule'){                       // 定时工作流：显示定时规则 + 下次触发
+    out.push(`<span class="bdg amber">⏰ 定时</span>`);
+    out.push(`<span class="bdg blue">${schDesc(t.schedule||{})}</span>`);
+    if(w.next_fire) out.push(`<span class="bdg green">下次 ${fmtDT(w.next_fire)}</span>`);
+    else if(w.enabled) out.push('<span class="bdg red">不会触发</span>');
+    return out.join('');
+  }
+  out.push(t.sessions?.length?`<span class="bdg blue">会话 ${t.sessions.length} 个</span>`:'<span class="bdg">所有会话</span>');
+  if(t.chat_type==='group') out.push('<span class="bdg blue">仅群聊</span>');
+  if(t.chat_type==='private') out.push('<span class="bdg blue">仅私聊</span>');
+  if(t.senders?.length) out.push(`<span class="bdg blue">发送人 ${t.senders.length} 人</span>`);
+  if(t.sender_type==='internal') out.push('<span class="bdg blue">仅内部成员</span>');
+  if(t.sender_type==='external') out.push('<span class="bdg amber">仅外部用户</span>');
+  if(t.at_me==='yes') out.push('<span class="bdg amber">必须@我</span>');
+  if(t.at_me==='no') out.push('<span class="bdg">未@我</span>');
+  if(t.msg_types?.length) out.push(`<span class="bdg">${t.msg_types.map(mtName).join('/')}</span>`);
+  if(c.mode==='any'&&c.keywords?.length) out.push(`<span class="bdg green">任一词: ${esc(c.keywords.join(' / '))}</span>`);
+  if(c.mode==='all'&&c.keywords?.length) out.push(`<span class="bdg green">全部词: ${esc(c.keywords.join(' + '))}</span>`);
+  if(c.mode==='regex'&&c.regex) out.push(`<span class="bdg green">正则: ${esc(c.regex)}</span>`);
+  return out.join('');
+}
+function actSummary(w){
+  return (w.actions||[]).map(a=>{
+    if(a.type==='forward') return `<span class="bdg blue">转发 → ${a.targets?.length||0} 个目标</span>`;
+    return `<span class="bdg amber">调用接口${a.reply?' · 回复返回值':''}</span>`;
+  }).join('')||'<span class="bdg red">无动作</span>';
+}
+function renderWfs(){
+  $('#wfCnt').textContent=WORKFLOWS.length?`${WORKFLOWS.length} 条 · 启用 ${WORKFLOWS.filter(w=>w.enabled).length}`:'';
+  const box=$('#wfList');
+  if(!WORKFLOWS.length){
+    box.innerHTML=`<div class="empty"><svg><use href="#i-flow"/></svg><br>还没有工作流<br>
+      <span style="font-size:12px">工作流 = 消息触发条件 + 一串动作（转发消息 / 调用接口并回复）</span><br>
+      <button class="btn primary" id="btnNewWf2" style="margin-top:14px">
+        <svg><use href="#i-plus"/></svg>新建工作流</button></div>`;
+    $('#btnNewWf2').onclick=()=>openEditor(BLANK(),false,true); return;
+  }
+  box.innerHTML=WORKFLOWS.map((w,i)=>{
+    const st=w.stats||{};
+    return `<div class="wf-card">
+      <div class="r1">
+        <label class="sw"><input type="checkbox" class="wfTgl" data-i="${i}" ${w.enabled?'checked':''}><span class="sl"></span></label>
+        <span class="nm">${esc(w.name)}</span>
+        <button class="btn sm wfTest" data-i="${i}"><svg><use href="#i-play"/></svg>测试</button>
+        <button class="btn sm wfEdit" data-i="${i}"><svg><use href="#i-edit"/></svg>编辑</button>
+        <button class="btn sm wfDup" data-i="${i}" title="复制"><svg><use href="#i-copy"/></svg></button>
+        <button class="btn sm danger wfDel" data-i="${i}" title="删除"><svg><use href="#i-trash"/></svg></button>
+      </div>
+      <div class="r2"><span class="lbl">触发</span>${trigSummary(w)}</div>
+      <div class="r2"><span class="lbl">动作</span>${actSummary(w)}</div>
+      <div class="r3">
+        <span class="st">触发 ${st.runs||0} 次${st.fails?` · <span style="color:var(--red)">失败 ${st.fails}</span>`:''}</span>
+        <span class="st">最近: ${fmtT(st.last_at)}</span>
+        <span class="sp"></span>
+        <span class="st">冷却 ${w.cooldown_sec||0}s · 限 ${w.max_per_min||30}/分${w.serial?' · 串行':''}</span>
+      </div></div>`;
+  }).join('');
+  $$('.wfTgl').forEach(el=>el.onchange=async()=>{
+    WORKFLOWS[+el.dataset.i].enabled=el.checked; await saveWfs();
+    toast(el.checked?'已启用':'已停用');});
+  $$('.wfEdit').forEach(el=>el.onclick=()=>openEditor(WORKFLOWS[+el.dataset.i]));
+  $$('.wfTest').forEach(el=>el.onclick=()=>openEditor(WORKFLOWS[+el.dataset.i],true));
+  $$('.wfDup').forEach(el=>el.onclick=async()=>{
+    const c=JSON.parse(JSON.stringify(WORKFLOWS[+el.dataset.i]));
+    c.id='wf_'+Math.random().toString(16).slice(2,10); c.name=c.name+' (副本)';
+    c.stats={}; WORKFLOWS.push(c); await saveWfs(); renderWfs(); toast('已复制');});
+  $$('.wfDel').forEach(el=>el.onclick=async()=>{
+    if(!confirm('确定删除工作流「'+WORKFLOWS[+el.dataset.i].name+'」？'))return;
+    WORKFLOWS.splice(+el.dataset.i,1); await saveWfs(); renderWfs(); toast('已删除');});
+}
+async function saveWfs(){
+  const j=await api('gw/workflows',{workflows:WORKFLOWS});
+  if(j.ok) WORKFLOWS=j.workflows;
+  return j.ok;
+}
+$('#btnNewWf').onclick=()=>openEditor(BLANK(),false,true);
+$('#btnSyncPicker').onclick=async()=>{
+  const b=$('#btnSyncPicker');b.disabled=true;b.textContent='同步中…';
+  try{await api('gw/sync-contacts',{});await loadPicker();toast(`已同步：群 ${GROUPS.length} · 联系人 ${CONTACTS.length}`);}
+  catch(e){toast('同步失败');}
+  b.disabled=false;b.innerHTML='<svg><use href="#i-sync"/></svg>同步通讯录';};
+
+// ==================== 多选器组件 ====================
+function mselHTML(key,items,selected,{placeholder='搜索…',manual='手动输入 id 后回车(可逗号分隔多个)'}={}){
+  MSEL[key]={items:[...items],sel:new Set(selected||[]),q:''};
+  (selected||[]).forEach(id=>{if(!MSEL[key].items.some(x=>x.id===id))
+    MSEL[key].items.push({id,name:id,tag:'手动'});});
+  return `<div class="msel" data-key="${key}">
+    <div class="msel-hd"><input class="msq" placeholder="${placeholder}"><span class="cnt"></span></div>
+    <div class="msel-list"></div>
+    <div class="msel-ft"><input class="msadd" placeholder="${manual}"></div></div>`;
+}
+function mselPaint(key){
+  const box=document.querySelector(`.msel[data-key="${key}"]`); if(!box)return;
+  const st=MSEL[key], q=st.q.trim();
+  const filtered=st.items.filter(x=>!q||x.id.includes(q)||(x.name||'').includes(q));
+  // 已选的排到列表最前(各自保持原顺序，稳定)；勾选当下不重排，只在重新渲染时置顶
+  const list=filtered.filter(x=>st.sel.has(x.id)).concat(filtered.filter(x=>!st.sel.has(x.id)));
+  const lb=box.querySelector('.msel-list');
+  lb.innerHTML=list.length?list.map(x=>`<label class="msel-it ${st.sel.has(x.id)?'on':''}">
+      <input type="checkbox" data-id="${esc(x.id)}" ${st.sel.has(x.id)?'checked':''}>
+      <span class="tg">${esc(x.tag||'')}</span><span>${esc(x.name||x.id)}</span>
+      <span class="idt">${esc(x.id)}</span></label>`).join('')
+    :`<div class="msel-none">${q?'没有匹配项':'暂无数据 · 可点「同步通讯录」或在下方手动输入 id'}</div>`;
+  box.querySelector('.cnt').textContent=st.sel.size?`已选 ${st.sel.size}`:'';
+  lb.querySelectorAll('input[type=checkbox]').forEach(cb=>cb.onchange=()=>{
+    cb.checked?st.sel.add(cb.dataset.id):st.sel.delete(cb.dataset.id);
+    cb.closest('.msel-it').classList.toggle('on',cb.checked);   // 即时高亮，不跳位
+    box.querySelector('.cnt').textContent=st.sel.size?`已选 ${st.sel.size}`:'';});
+}
+function mselBind(key){
+  const box=document.querySelector(`.msel[data-key="${key}"]`); if(!box)return;
+  box.querySelector('.msq').oninput=e=>{MSEL[key].q=e.target.value;mselPaint(key);};
+  box.querySelector('.msadd').onkeydown=e=>{
+    if(e.key!=='Enter')return; e.preventDefault();
+    const v=e.target.value.trim(); if(!v)return;
+    v.split(/[,，\s]+/).filter(Boolean).forEach(id=>{
+      if(!MSEL[key].items.some(x=>x.id===id)) MSEL[key].items.push({id,name:id,tag:'手动'});
+      MSEL[key].sel.add(id);});
+    e.target.value=''; mselPaint(key);};
+  mselPaint(key);
+}
+const mselGet=key=>MSEL[key]?[...MSEL[key].sel]:[];
+
+// ==================== chips 组件(关键词) ====================
+function chipsHTML(key,vals,{placeholder='输入后回车添加'}={}){
+  MSEL[key]={vals:[...(vals||[])]};
+  return `<div class="chips" data-key="${key}"><input placeholder="${placeholder}"></div>`;
+}
+function chipsPaint(key){
+  const box=document.querySelector(`.chips[data-key="${key}"]`); if(!box)return;
+  const inp=box.querySelector('input');
+  box.querySelectorAll('.chip').forEach(x=>x.remove());
+  MSEL[key].vals.forEach((v,i)=>{
+    const el=document.createElement('span');el.className='chip';
+    el.innerHTML=`${esc(v)}<b>×</b>`;
+    el.querySelector('b').onclick=()=>{MSEL[key].vals.splice(i,1);chipsPaint(key);};
+    box.insertBefore(el,inp);});
+}
+function chipsBind(key){
+  const box=document.querySelector(`.chips[data-key="${key}"]`); if(!box)return;
+  const inp=box.querySelector('input');
+  inp.onkeydown=e=>{
+    if(e.key==='Enter'){e.preventDefault();
+      inp.value.split(/[,，]/).map(s=>s.trim()).filter(Boolean)
+        .forEach(v=>!MSEL[key].vals.includes(v)&&MSEL[key].vals.push(v));
+      inp.value='';chipsPaint(key);}
+    if(e.key==='Backspace'&&!inp.value&&MSEL[key].vals.length){
+      MSEL[key].vals.pop();chipsPaint(key);}};
+  chipsPaint(key);
+}
+const chipsGet=key=>MSEL[key]?[...MSEL[key].vals]:[];
+
+// ==================== 编辑器 ====================
+const BLANK=()=>({id:'wf_'+Math.random().toString(16).slice(2,10),name:'',enabled:true,
+  trigger:{kind:'message',
+           schedule:{mode:'daily',time:'09:00',weekdays:[1,2,3,4,5],date:'',text:''},
+           sessions:[],chat_type:'any',senders:[],sender_type:'any',at_me:'any',msg_types:[],
+           content:{mode:'none',keywords:[],regex:''}},
+  actions:[],cooldown_sec:0,max_per_min:30,serial:false,stats:{}});
+const WD=['一','二','三','四','五','六','日'];   // 1=周一 … 7=周日
+
+function openEditor(wf,showTest,isNew){
+  M=wf?JSON.parse(JSON.stringify(wf)):BLANK();
+  IS_NEW=!!isNew;
+  $('#dTitle').textContent=isNew?'新建工作流':'编辑工作流';
+  $('#fOn').checked=M.enabled!==false;
+  $('#btnDel').classList.toggle('hide',!!isNew);
+  renderEditor();
+  gotoStep(showTest?3:1);
+  $('#mask').classList.add('on');$('#drawer').classList.add('on');
+  if(showTest){
+    $('#testBox').classList.add('open');
+    setTimeout(()=>$('#testBox').scrollIntoView({behavior:'smooth',block:'center'}),100);
+  }
+}
+function closeEditor(){$('#mask').classList.remove('on');$('#drawer').classList.remove('on');M=null;}
+$('#mask').onclick=closeEditor; $('#btnClose').onclick=closeEditor; $('#btnCancel').onclick=closeEditor;
+
+// ---- 步骤切换 ----
+function gotoStep(n){
+  STEP=Math.max(1,Math.min(3,n));
+  $$('#dBody .dpane').forEach(p=>p.classList.toggle('on',+p.dataset.p===STEP));
+  $$('#dSteps .step').forEach(b=>{
+    const s=+b.dataset.s;
+    b.classList.toggle('on',s===STEP);
+    b.classList.toggle('done',s<STEP);
+  });
+  $$('#dSteps .sline').forEach(l=>l.classList.toggle('done',+l.dataset.l<STEP));
+  // 底部按钮：新建时用“下一步”引导，最后一步才露出保存
+  $('#btnPrev').classList.toggle('hide',STEP===1);
+  const last=STEP===3;
+  $('#btnNext').classList.toggle('hide',last);
+  $('#btnNext').innerHTML=(STEP===1?'下一步：执行动作':'下一步：高级与测试')+'<svg><use href="#i-arrow"/></svg>';
+  $('#btnSave').classList.toggle('hide',IS_NEW&&!last);   // 编辑态任何步骤都能直接保存
+  $('#btnTest').classList.toggle('hide',IS_NEW&&!last);
+  $('#dBody').scrollTop=0;
+  paintSum();
+}
+$('#btnNext').onclick=()=>{collect();renderActions();gotoStep(STEP+1);};
+$('#btnPrev').onclick=()=>{collect();renderActions();gotoStep(STEP-1);};
+$$('#dSteps .step').forEach(b=>b.onclick=()=>{collect();renderActions();gotoStep(+b.dataset.s);});
+
+// ---- 实时规则预览：当…… → …… ----
+// 定时规则的中文描述，如「每周一/三/五 09:00」
+function schDesc(sc){
+  const tm=sc.time||'09:00';
+  if(sc.mode==='once') return sc.date?`${sc.date} ${tm}(仅一次)`:'<span class="miss">未选日期</span>';
+  if(sc.mode==='weekly'){
+    const d=(sc.weekdays||[]).slice().sort((a,b)=>a-b);
+    return d.length?`每周${d.map(i=>WD[i-1]).join('/')} ${tm}`:'<span class="miss">未选星期</span>';
+  }
+  return `每天 ${tm}`;
+}
+function paintNext(){
+  const box=$('#schNext'); if(!box||!M)return;
+  if(M.trigger.kind!=='schedule'){box.textContent='';return;}
+  collectSafe();
+  const sc=M.trigger.schedule, ts=nextFireTs(sc);
+  if(!ts){box.className='nextfire warn';
+    box.innerHTML=sc.mode==='once'?'⚠️ 日期为空或已过去，不会触发':'⚠️ 没选星期，不会触发';return;}
+  const d=new Date(ts*1000), p=n=>String(n).padStart(2,'0');
+  box.className='nextfire';
+  box.innerHTML=`⏰ 下次触发：${d.getFullYear()}-${p(d.getMonth()+1)}-${p(d.getDate())} `+
+    `${p(d.getHours())}:${p(d.getMinutes())}（周${WD[(d.getDay()+6)%7]}）`;
+}
+// 前端预估下次触发(与后端 next_fire 同规则)，只用于即时反馈
+function nextFireTs(sc){
+  const [hh,mm]=(sc.time||'09:00').split(':').map(Number);
+  const now=new Date();
+  if(sc.mode==='once'){
+    if(!sc.date)return 0;
+    const d=new Date(`${sc.date}T${String(hh).padStart(2,'0')}:${String(mm).padStart(2,'0')}:00`);
+    return d.getTime()>now.getTime()?Math.floor(d.getTime()/1000):0;
+  }
+  for(let i=0;i<8;i++){
+    const d=new Date(now.getFullYear(),now.getMonth(),now.getDate()+i,hh,mm,0,0);
+    const iso=((d.getDay()+6)%7)+1;             // 1=周一 … 7=周日
+    if(sc.mode==='weekly'&&!(sc.weekdays||[]).includes(iso))continue;
+    if(d.getTime()>now.getTime())return Math.floor(d.getTime()/1000);
+  }
+  return 0;
+}
+function paintSum(){
+  if(!M)return;
+  collectSafe();
+  const t=M.trigger,c=t.content,w=[];
+  if(t.kind==='schedule'){
+    const acts=(M.actions||[]).map(a=>a.type==='forward'
+      ? `发送到 ${a.targets&&a.targets.length?`<span class="kw">${a.targets.length} 个目标</span>`:'<span class="miss">未选目标</span>'}`
+      : `调用接口${a.url?'':' <span class="miss">未填地址</span>'}${a.reply?(a.reply_to&&a.reply_to.length?'并回复结果':' <span class="miss">未选回复目标</span>'):''}`);
+    $('#dSumTx').innerHTML=`<b>${schDesc(t.schedule||{})}</b>，<b>就</b> `+
+      (acts.length?acts.join('，然后 '):'<span class="miss">还没有动作</span>');
+    return;
+  }
+  if(t.chat_type==='group') w.push('群聊');
+  else if(t.chat_type==='private') w.push('私聊');
+  if(t.sessions.length) w.push(`<span class="kw">${t.sessions.length} 个指定会话</span>`);
+  if(t.sender_type==='internal') w.push('内部成员');
+  else if(t.sender_type==='external') w.push('外部用户');
+  if(t.senders.length) w.push(`<span class="kw">${t.senders.length} 位指定发送人</span>`);
+  if(t.at_me==='yes') w.push('@了托管账号');
+  else if(t.at_me==='no') w.push('未@托管账号');
+  if(t.msg_types.length) w.push(t.msg_types.map(mtName).join('/'));
+  if(c.mode==='any'&&c.keywords.length) w.push(`含任一关键词 <span class="kw">${esc(c.keywords.join(' / '))}</span>`);
+  else if(c.mode==='all'&&c.keywords.length) w.push(`同时含 <span class="kw">${esc(c.keywords.join(' + '))}</span>`);
+  else if(c.mode==='regex'&&c.regex) w.push(`匹配正则 <span class="kw">${esc(c.regex)}</span>`);
+  const when=w.length?w.join(' 且 '):'<b>任意会话的任意消息</b>';
+  const acts=(M.actions||[]).map(a=>a.type==='forward'
+    ? `转发到 ${a.targets&&a.targets.length?`<span class="kw">${a.targets.length} 个目标</span>`:'<span class="miss">未选目标</span>'}`
+    : `调用接口${a.url?'':' <span class="miss">未填地址</span>'}${a.reply?'并回复结果':''}`);
+  const then=acts.length?acts.join('，然后 '):'<span class="miss">还没有动作</span>';
+  $('#dSumTx').innerHTML=`当 ${when}，<b>就</b> ${then}`;
+}
+// 只读取当前存在的 DOM，缺元素也不报错(用于预览，不做校验)
+function collectSafe(){try{collect();}catch(e){}}
+// 条件类输入(会话/发送人勾选、关键词、正则、消息类型)变化时刷新预览。
+// 用事件委托绑在 #dBody 上，只绑一次——renderEditor 每次只换 innerHTML，不会重复累积监听。
+$('#dBody').addEventListener('change',e=>{
+  if(!M)return;
+  const box=e.target.closest('.msel');
+  if(box||e.target.closest('.chips,#mtBox')||e.target.id==='fRegex') paintSum();
+  // 改了「指定会话」且当前是仅群聊 -> 重算群成员候选(命中缓存则不发请求)。
+  // 只认 tSess：否则点选发送人自己也会重绘列表，选着的人会跳位。
+  if(box&&box.dataset.key==='tSess'&&M.trigger.chat_type==='group') syncSenderList(false);});
+$('#dBody').addEventListener('keyup',e=>{if(M&&e.target.id==='fRegex')paintSum();});
+
+function crow(id,title,hintHtml,bodyHtml,open,icon){
+  // open=true 表示该条件已设置：同时加 set 类做高亮，一眼看出哪些条件生效
+  return `<div class="crow ${open?'open set':''}" id="${id}">
+    <div class="crow-hd" onclick="this.parentElement.classList.toggle('open')">
+      <span class="pm"></span>
+      ${icon?`<span class="ci"><svg><use href="#${icon}"/></svg></span>`:''}
+      <span class="t">${title}</span>
+      <span class="hint">${hintHtml}</span></div>
+    <div class="crow-bd">${bodyHtml}</div></div>`;
+}
+
+function renderEditor(){
+  const t=M.trigger,c=t.content;
+  if(!t.schedule) t.schedule={mode:'daily',time:'09:00',weekdays:[1,2,3,4,5],date:'',text:''};
+  const sc=t.schedule, sched=(t.kind==='schedule');
+  // 清掉上一个工作流残留的动作多选器状态，避免串到这一个身上
+  Object.keys(MSEL).forEach(k=>{if(/^a(Tgt|Rto)\d+$/.test(k)) delete MSEL[k];});
+  const hSess=t.sessions.length?`<span class="set">已选 ${t.sessions.length} 个会话</span>`:'请选择需要接收消息的会话，不填将接收所有会话消息';
+  const hCh=(!t.chat_type||t.chat_type==='any')?'不填则群聊和私聊都可触发'
+    :`<span class="set">${t.chat_type==='group'?'仅群聊':'仅私聊'}</span>`;
+  const hSend=t.senders.length?`<span class="set">已选 ${t.senders.length} 人</span>`:'不填则所有人都可触发';
+  const hUt=(!t.sender_type||t.sender_type==='any')?'不填将接收内部和外部所有用户'
+    :`<span class="set">${t.sender_type==='internal'?'仅内部成员':'仅外部用户'}</span>`;
+  const hAt=t.at_me==='any'?'不填将返回所有；仅支持群聊':`<span class="set">${t.at_me==='yes'?'必须@托管账号':'必须未@托管账号'}</span>`;
+  const hMt=t.msg_types.length?`<span class="set">${t.msg_types.map(mtName).join('、')}</span>`:'请选择希望接收的消息类型，不填接收所有';
+  const hCt=c.mode==='none'?'不填将匹配所有内容'
+    :`<span class="set">${{any:'任一关键词',all:'全部关键词',regex:'正则'}[c.mode]}${c.keywords.length?': '+esc(c.keywords.join(' / ')):(c.regex?': '+esc(c.regex):'')}</span>`;
+
+  $('#dBody').innerHTML=`
+  <!-- ===== 步骤1：触发条件 ===== -->
+  <div class="dpane on" data-p="1">
+  <div class="ffield"><div class="lab">工作流名称</div>
+    <input type="text" id="fName" placeholder="例：客户群报障 → 转发研发群并自动查工单" value="${esc(M.name)}"></div>
+
+  <div class="sec">触发方式</div>
+  <div class="kinds" id="kindBox">
+    <button class="kind ${sched?'':'on'}" data-v="message">
+      <span class="ki"><svg><use href="#i-msg"/></svg></span>
+      <span><span class="kn">消息触发</span><span class="kd">收到符合条件的消息时执行</span></span></button>
+    <button class="kind ${sched?'on':''}" data-v="schedule">
+      <span class="ki"><svg><use href="#i-clock"/></svg></span>
+      <span><span class="kn">定时触发</span><span class="kd">到指定时间自动执行</span></span></button>
+  </div>
+
+  <!-- ===== 定时设置 ===== -->
+  <div id="schBox" class="${sched?'':'hide'}">
+    <div class="sec">定时设置</div>
+    <div class="ffield"><div class="lab">重复方式</div>
+      <div class="seg" id="segSm">
+        <button data-v="daily" class="${sc.mode==='daily'?'on':''}">每天</button>
+        <button data-v="weekly" class="${sc.mode==='weekly'?'on':''}">每周</button>
+        <button data-v="once" class="${sc.mode==='once'?'on':''}">指定日期(一次)</button></div></div>
+    <div class="frow">
+      <div class="ffield" style="flex:0 0 150px"><div class="lab">时间</div>
+        <input type="time" id="fSchTime" value="${esc(sc.time||'09:00')}"></div>
+      <div class="ffield ${sc.mode==='once'?'':'hide'}" id="schDateF"><div class="lab">日期
+          <span class="tip">触发一次后自动停用</span></div>
+        <input type="date" id="fSchDate" value="${esc(sc.date||'')}"></div>
+    </div>
+    <div class="ffield ${sc.mode==='weekly'?'':'hide'}" id="schWdF"><div class="lab">星期
+        <span class="tip">可多选</span></div>
+      <div class="wds" id="wdBox">${WD.map((n,i)=>`<label class="wd ${(sc.weekdays||[]).includes(i+1)?'on':''}">
+        <input type="checkbox" value="${i+1}" ${(sc.weekdays||[]).includes(i+1)?'checked':''}>周${n}</label>`).join('')}</div></div>
+    <div class="ffield"><div class="lab">消息内容<span class="tip">动作模板里的 {content} 用这段文字</span></div>
+      <textarea id="fSchText" rows="2" placeholder="例：早会提醒，请各位同步昨日进展">${esc(sc.text||'')}</textarea>
+      <div class="varhint">定时触发没有来源消息，所以 <code>{content}</code> 取这里填的文字；
+        <code>{date}</code> <code>{time}</code> 正常可用，<code>{sender_name}</code> 为「定时任务」。
+        转发目标 / 回复目标<b>必须指定</b>(没有“来源会话”可回)。</div></div>
+    <div id="schNext" class="nextfire"></div>
+  </div>
+
+  <!-- ===== 消息触发条件 ===== -->
+  <div id="msgCond" class="${sched?'hide':''}">
+  <div class="sec">触发条件 · 消息即触发器</div>
+  <div class="ptip"><span class="si" style="width:15px;flex-shrink:0;color:var(--text-3)">
+      <svg style="width:15px;height:15px;stroke:currentColor;fill:none;stroke-width:1.8"><use href="#i-bolt"/></svg></span>
+    <span>以下条件<b>全部可选</b>，留空即“不限”。多个条件之间是 <b>并且</b> 关系——都满足才触发。
+      已设置的条件会<span style="color:var(--blue);font-weight:600">高亮显示</span>。</span></div>
+  ${crow('cSess','指定会话',hSess,`${mselHTML('tSess',PICKER,t.sessions)}`,t.sessions.length>0,'i-chat')}
+  ${crow('cCh','会话类型',hCh,`
+     <div class="seg" id="segCh">
+       <button data-v="any" class="${t.chat_type==='any'||!t.chat_type?'on':''}">不限</button>
+       <button data-v="group" class="${t.chat_type==='group'?'on':''}">仅群聊</button>
+       <button data-v="private" class="${t.chat_type==='private'?'on':''}">仅私聊</button></div>
+     <div class="varhint">按会话 id 前缀判断：群 R: / 私聊 S:</div>`,
+     !!t.chat_type&&t.chat_type!=='any','i-flow')}
+  ${crow('cSend','指定发送人',hSend,`
+     <div style="display:flex;gap:8px;margin-bottom:8px;align-items:center;flex-wrap:wrap">
+       <button class="btn sm" id="btnRefreshMem" title="重新向企微拉取，更新缓存">
+         <svg><use href="#i-sync"/></svg>刷新群成员</button>
+       <button class="btn sm" id="btnAllContact">显示所有联系人</button>
+       <span style="font-size:11.5px;color:var(--text-3)" id="memHint"></span></div>
+     ${mselHTML('tSender',senderItems(t),t.senders)}`,t.senders.length>0,'i-users')}
+  ${crow('cUt','用户类型',hUt,`
+     <div class="seg" id="segUt">
+       <button data-v="any" class="${t.sender_type==='any'||!t.sender_type?'on':''}">不限</button>
+       <button data-v="internal" class="${t.sender_type==='internal'?'on':''}">仅内部成员</button>
+       <button data-v="external" class="${t.sender_type==='external'?'on':''}">仅外部用户</button></div>
+     <div class="varhint">依据通讯录判断(登录后自动同步)；未同步时按 id 段兜底(内部 1688 开头 / 外部 788 开头)</div>`,
+     !!t.sender_type&&t.sender_type!=='any','i-users')}
+  ${crow('cAt','是否 @',hAt,`
+     <div class="seg" id="segAt">
+       <button data-v="any" class="${t.at_me==='any'?'on':''}">不限</button>
+       <button data-v="yes" class="${t.at_me==='yes'?'on':''}">必须 @ 托管账号</button>
+       <button data-v="no" class="${t.at_me==='no'?'on':''}">必须未 @</button></div>
+     <div class="varhint">依据推送的 at_list 判断；私聊消息视为未@</div>`,t.at_me!=='any','i-at')}
+  ${crow('cMt','消息类型',hMt,`
+     <div style="display:flex;gap:6px;flex-wrap:wrap" id="mtBox">
+       ${MSG_TYPES.map(([v,n])=>`<label class="bdg" style="cursor:pointer;padding:5px 10px">
+         <input type="checkbox" value="${v}" ${t.msg_types.includes(v)?'checked':''} style="width:auto"> ${n}</label>`).join('')}
+     </div><div class="varhint">当前桥接层仅推送文本(2)，其余类型为预留</div>`,t.msg_types.length>0,'i-file')}
+  ${crow('cCt','消息内容',hCt,`
+     <div class="seg" id="segCt" style="margin-bottom:9px">
+       <button data-v="none" class="${c.mode==='none'?'on':''}">不限</button>
+       <button data-v="any" class="${c.mode==='any'?'on':''}">任一关键词</button>
+       <button data-v="all" class="${c.mode==='all'?'on':''}">全部关键词</button>
+       <button data-v="regex" class="${c.mode==='regex'?'on':''}">正则</button></div>
+     <div id="ctKw" class="${c.mode==='any'||c.mode==='all'?'':'hide'}">${chipsHTML('tKw',c.keywords,{placeholder:'输入关键词后回车，可多个'})}</div>
+     <div id="ctRx" class="${c.mode==='regex'?'':'hide'}">
+       <input type="text" id="fRegex" placeholder="例：^(报警|告警).*(超时|失败)" value="${esc(c.regex)}" style="font-family:var(--mono)"></div>`,
+     c.mode!=='none','i-search')}
+  </div><!-- /msgCond -->
+  </div><!-- /pane1 -->
+
+  <!-- ===== 步骤2：执行动作 ===== -->
+  <div class="dpane" data-p="2">
+  <div class="sec">执行动作 · 命中条件后要做什么</div>
+  <div class="ptip"><span class="si" style="width:15px;flex-shrink:0;color:var(--text-3)">
+      <svg style="width:15px;height:15px;stroke:currentColor;fill:none;stroke-width:1.8"><use href="#i-arrow"/></svg></span>
+    <span><b>至少要有一个动作</b>，否则无法保存。多个动作<b>按顺序执行、互相隔离</b>——一个失败不影响其它。</span></div>
+  <div id="actList"></div>
+  <div class="addtiles">
+    <button class="addtile" id="btnAddFwd">
+      <span class="ai g"><svg><use href="#i-fwd"/></svg></span>
+      <span><span class="an">转发消息</span><span class="ad">把消息转到其他群或人，可套模板</span></span></button>
+    <button class="addtile" id="btnAddHttp">
+      <span class="ai b"><svg><use href="#i-api"/></svg></span>
+      <span><span class="an">调用接口</span><span class="ad">调 HTTP 接口，可把返回内容发回会话</span></span></button>
+  </div>
+  </div><!-- /pane2 -->
+
+  <!-- ===== 步骤3：高级与测试 ===== -->
+  <div class="dpane" data-p="3">
+  <div class="sec">高级</div>
+  <div class="frow">
+    <div class="ffield"><div class="lab">冷却时间(秒)<span class="tip">同一会话两次触发的最小间隔，防刷屏</span></div>
+      <input type="number" id="fCd" min="0" value="${M.cooldown_sec||0}"></div>
+    <div class="ffield"><div class="lab">每分钟最多触发<span class="tip">全局限流，防风暴</span></div>
+      <input type="number" id="fRate" min="1" value="${M.max_per_min||30}"></div>
+    <div class="ffield"><div class="lab">串行执行
+      <label class="sw"><input type="checkbox" id="fSerial" ${M.serial?'checked':''}><span class="sl"></span></label></div>
+      <div class="varhint">同时触发时排队逐条执行。下游接口并发受限(如 Codex 并发=1)时务必开启</div></div></div>
+
+  <div class="crow" id="testBox">
+    <div class="crow-hd" onclick="this.parentElement.classList.toggle('open')">
+      <span class="pm"></span><span class="t">测试 · ${sched?'立即试跑一次(不等到点)':'用一条模拟消息试跑'}</span>
+      <span class="hint">转发只预览不发送；接口可真实调用</span></div>
+    <div class="crow-bd">
+      <div id="tsMsgBox" class="${sched?'hide':''}">
+      <div class="frow">
+        <div class="ffield"><div class="lab">来源会话 id</div>
+          <input type="text" id="tsSess" placeholder="R:1234567 或 S:xxx" value="R:1234567"></div>
+        <div class="ffield"><div class="lab">发送人 id / 昵称</div>
+          <div style="display:flex;gap:8px">
+            <input type="text" id="tsSender" placeholder="u_123" value="u_test">
+            <input type="text" id="tsSname" placeholder="昵称" value="测试用户"></div></div></div>
+      <div class="ffield"><div class="lab">消息内容</div>
+        <input type="text" id="tsContent" placeholder="模拟的消息文本" value="测试消息"></div>
+      </div>
+      <div id="tsSchTip" class="ptip ${sched?'':'hide'}">
+        <span class="si" style="width:15px;flex-shrink:0;color:var(--text-3)">
+          <svg style="width:15px;height:15px;stroke:currentColor;fill:none;stroke-width:1.8"><use href="#i-clock"/></svg></span>
+        <span>定时工作流没有触发条件要匹配，点「运行测试」会<b>立即</b>按定时任务的方式跑一遍动作，
+          用来验证接口和目标配得对不对，<b>不影响</b>真正的定时计划。</span></div>
+      <div style="display:flex;gap:16px;align-items:center;margin-bottom:12px;flex-wrap:wrap">
+        <label class="${sched?'hide':''}" style="display:flex;gap:6px;align-items:center;font-size:12.5px">发送人身份
+          <select id="tsUtype" style="width:auto;padding:4px 8px">
+            <option value="">按 id 自动判断</option>
+            <option value="0">内部成员</option>
+            <option value="1">外部用户</option></select></label>
+        <label class="${sched?'hide':''}" style="display:flex;gap:6px;align-items:center;font-size:12.5px">
+          <input type="checkbox" id="tsAt" style="width:auto"> 已 @ 托管账号</label>
+        <label style="display:flex;gap:6px;align-items:center;font-size:12.5px">
+          <input type="checkbox" id="tsHttp" checked style="width:auto"> 真实调用接口(不发消息)</label>
+        <button class="btn sm primary" id="btnRunTest"><svg><use href="#i-play"/></svg>运行测试</button></div>
+      <div id="testOut"></div>
+    </div></div>
+  </div><!-- /pane3 -->`;
+
+  mselBind('tSess'); mselBind('tSender'); chipsBind('tKw');
+  // 触发方式切换：定时/消息 两套条件互斥显示
+  $$('#kindBox .kind').forEach(b=>b.onclick=()=>{
+    M.trigger.kind=b.dataset.v;
+    $$('#kindBox .kind').forEach(x=>x.classList.toggle('on',x===b));
+    const s=M.trigger.kind==='schedule';
+    $('#schBox').classList.toggle('hide',!s);
+    $('#msgCond').classList.toggle('hide',s);
+    // 测试面板同步：定时模式下模拟消息那几栏无意义，换成说明
+    $('#tsMsgBox')?.classList.toggle('hide',s);
+    $('#tsSchTip')?.classList.toggle('hide',!s);
+    $$('#testBox label').forEach(l=>{
+      if(l.querySelector('#tsAt')||l.querySelector('#tsUtype')) l.classList.toggle('hide',s);});
+    const tt=$('#testBox .crow-hd .t');
+    if(tt) tt.textContent='测试 · '+(s?'立即试跑一次(不等到点)':'用一条模拟消息试跑');
+    paintSum();paintNext();});
+  bindSeg('segSm',v=>{M.trigger.schedule.mode=v;
+    $('#schDateF').classList.toggle('hide',v!=='once');
+    $('#schWdF').classList.toggle('hide',v!=='weekly');
+    paintSum();paintNext();});
+  $$('#wdBox input').forEach(cb=>cb.onchange=()=>{
+    cb.closest('.wd').classList.toggle('on',cb.checked);paintSum();paintNext();});
+  ['fSchTime','fSchDate','fSchText'].forEach(id=>{
+    const el=$('#'+id); if(el) el.onchange=()=>{paintSum();paintNext();};});
+  paintNext();
+  // 会话类型决定「指定发送人」列什么：仅群聊→只列群成员，仅私聊→只列联系人
+  bindSeg('segCh',v=>{M.trigger.chat_type=v;paintSum();syncSenderList(false);});
+  bindSeg('segUt',v=>{M.trigger.sender_type=v;paintSum();});
+  bindSeg('segAt',v=>{M.trigger.at_me=v;paintSum();});
+  bindSeg('segCt',v=>{M.trigger.content.mode=v;
+    $('#ctKw').classList.toggle('hide',v!=='any'&&v!=='all');
+    $('#ctRx').classList.toggle('hide',v!=='regex');paintSum();});
+  $('#btnAddFwd').onclick=()=>{collectActions();M.actions.push({type:'forward',targets:[],
+    template:'【{source_name}】{sender_name}：{content}'});renderActions();};
+  $('#btnAddHttp').onclick=()=>{collectActions();M.actions.push({type:'http',method:'GET',url:'',headers:'',body:'',
+    timeout_sec:10,retries:1,reply:true,reply_path:'',reply_template:'{result}',reply_to:[]});renderActions();};
+  $('#btnRefreshMem').onclick=()=>syncSenderList(true);   // 只有这个按钮会真的问 DLL
+  $('#btnAllContact').onclick=showAllContacts;
+  $('#btnRunTest').onclick=runTest;
+  renderActions();
+  syncSenderList(false);        // 打开编辑器时按当前会话类型自动准备候选(走缓存)
+}
+function bindSeg(id,fn){
+  const seg=document.getElementById(id); if(!seg)return;
+  seg.querySelectorAll('button').forEach(b=>b.onclick=()=>{
+    seg.querySelectorAll('button').forEach(x=>x.classList.toggle('on',x===b));
+    fn(b.dataset.v);});
+}
+// ---- 「指定发送人」候选列表：按会话类型自动切换，群成员走缓存 ----
+const CONTACT_ITEMS=()=>CONTACTS.map(x=>({id:x.id,name:x.name||x.id,tag:x.is_external?'外部':'同事'}));
+// 已勾选但不在新列表里的，保留成“手动”项，切换列表时不会把选好的人弄丢
+function keepSel(st,items){
+  const out=[...items];
+  st.sel.forEach(id=>{if(!out.some(x=>x.id===id)) out.push({id,name:id,tag:'手动'});});
+  return out;
+}
+// 首次渲染用的初始候选(同步，只读缓存，不发请求)
+function senderItems(t){
+  const ct=t.chat_type||'any';
+  if(ct!=='group') return CONTACT_ITEMS();
+  const seen=new Map();
+  (t.sessions||[]).filter(x=>x.startsWith('R:'))
+    .forEach(g=>(MEMCACHE[g]||[]).forEach(m=>{
+      if(m.id&&!seen.has(m.id)) seen.set(m.id,{id:m.id,name:m.name||m.id,tag:'成员'});}));
+  return [...seen.values()];
+}
+// 只在缺缓存时请求后端；force=true 才让后端穿透到 DLL 重新拉
+async function fetchMembers(gids,force){
+  const btn=$('#btnRefreshMem');
+  if(btn){btn.disabled=true;btn.textContent='加载中…';}
+  for(const g of gids.slice(0,10)){
+    try{
+      const j=await api('gw/members',{group_id:g,refresh:!!force});
+      MEMCACHE[g]=j.list||[];
+    }catch(e){ if(!MEMCACHE[g]) MEMCACHE[g]=[]; }
+  }
+  if(btn){btn.disabled=false;btn.innerHTML='<svg><use href="#i-sync"/></svg>刷新群成员';}
+}
+async function syncSenderList(force){
+  const st=MSEL.tSender; if(!M||!st)return;
+  const ct=M.trigger.chat_type||'any';
+  const hint=$('#memHint');
+  if(ct==='group'){
+    const gids=mselGet('tSess').filter(x=>x.startsWith('R:'));
+    if(!gids.length){
+      st.items=keepSel(st,[]);
+      if(hint)hint.textContent='仅群聊：请先在「指定会话」勾选群，才能列出群成员';
+    }else{
+      const need=force?gids:gids.filter(g=>!MEMCACHE[g]);
+      if(need.length) await fetchMembers(need,force);
+      const seen=new Map();
+      gids.forEach(g=>(MEMCACHE[g]||[]).forEach(m=>{
+        if(m.id&&!seen.has(m.id)) seen.set(m.id,{id:m.id,name:m.name||m.id,tag:'成员'});}));
+      st.items=keepSel(st,[...seen.values()]);
+      if(hint)hint.textContent=`仅群聊：只列所选 ${gids.length} 个群的 ${seen.size} 名成员`
+        +(force?'（已刷新）':(need.length?'':'（缓存）'));
+      if(force) toast(`已刷新 ${seen.size} 名群成员`);
+    }
+  }else if(ct==='private'){
+    st.items=keepSel(st,CONTACT_ITEMS());
+    if(hint)hint.textContent=`仅私聊：只列联系人（${CONTACTS.length} 人）`;
+  }else{
+    st.items=keepSel(st,CONTACT_ITEMS());
+    if(hint)hint.textContent='不限会话类型：列出联系人；要选群成员可把「会话类型」设为仅群聊';
+  }
+  st.q='';
+  const sq=document.querySelector('.msel[data-key="tSender"] .msq'); if(sq) sq.value='';
+  mselPaint('tSender');
+}
+function showAllContacts(){
+  const st=MSEL.tSender; if(!st)return;
+  st.items=keepSel(st,CONTACT_ITEMS()); st.q='';
+  const sq=document.querySelector('.msel[data-key="tSender"] .msq'); if(sq) sq.value='';
+  mselPaint('tSender');
+  const hint=$('#memHint'); if(hint)hint.textContent=`已切到全部联系人（${CONTACTS.length} 人）`;
+}
+
+// ---- 动作渲染 ----
+function renderActions(){
+  const box=$('#actList');
+  if(!M.actions.length){
+    box.innerHTML=`<div class="empty" style="padding:20px;box-shadow:none;background:#fff;margin-bottom:10px">
+      还没有动作 · 从下面选一个添加</div>`;paintSum();return;
+  }
+  box.innerHTML=M.actions.map((a,i)=>{
+    const fw=a.type==='forward';
+    const hd=`<div class="act-hd"><span class="no">${i+1}</span>
+      <span class="ty ${fw?'g':'b'}"><svg><use href="#${fw?'i-fwd':'i-api'}"/></svg></span>
+      <span class="tt">${fw?'转发消息':'调用接口'}</span><span class="sp"></span>
+      <button class="ab" data-op="up" data-i="${i}" title="上移"><svg class="ic"><use href="#i-up"/></svg></button>
+      <button class="ab" data-op="down" data-i="${i}" title="下移"><svg class="ic"><use href="#i-down"/></svg></button>
+      <button class="ab del" data-op="del" data-i="${i}" title="删除"><svg class="ic"><use href="#i-trash"/></svg></button></div>`;
+    if(a.type==='forward') return `<div class="act fw">${hd}<div class="act-bd">
+      <div class="ffield"><div class="lab">转发到<span class="tip">群或联系人，可多选</span></div>
+        ${mselHTML('aTgt'+i,PICKER,a.targets)}</div>
+      <div class="ffield"><div class="lab">消息模板</div>
+        <input type="text" class="aIn" data-i="${i}" data-k="template" value="${esc(a.template||'')}">
+        <div class="varhint">变量：<code>{content}</code> 消息内容 · <code>{sender_name}</code> 发送人 ·
+          <code>{source_name}</code> 来源会话名 · <code>{time}</code> <code>{date}</code></div></div>
+      </div></div>`;
+    return `<div class="act ht">${hd}<div class="act-bd">
+      <div class="frow">
+        <div class="ffield" style="flex:0 0 130px"><div class="lab">方法</div>
+          <select class="aIn" data-i="${i}" data-k="method">
+            <option ${a.method==='GET'?'selected':''}>GET</option>
+            <option ${a.method==='POST'?'selected':''}>POST</option></select></div>
+        <div class="ffield"><div class="lab">接口地址</div>
+          <input type="text" class="aIn" data-i="${i}" data-k="url" placeholder="https://api.example.com/query?q={content}"
+            value="${esc(a.url||'')}" style="font-family:var(--mono)"></div></div>
+      <div class="frow">
+        <div class="ffield"><div class="lab">请求头<span class="tip">每行一个 Key: Value</span></div>
+          <textarea class="aIn" data-i="${i}" data-k="headers" rows="2"
+            placeholder="Authorization: Bearer xxx" style="font-family:var(--mono)">${esc(a.headers||'')}</textarea></div>
+        <div class="ffield"><div class="lab">请求体<span class="tip">POST 时生效；拼 JSON 请用 {content_json} 等转义变量</span></div>
+          <textarea class="aIn" data-i="${i}" data-k="body" rows="2"
+            placeholder='{"message": "{content_json}"}' style="font-family:var(--mono)">${esc(a.body||'')}</textarea></div></div>
+      <div class="frow">
+        <div class="ffield"><div class="lab">超时(秒)<span class="tip">慢接口(如 AI)可设 1900</span></div>
+          <input type="number" class="aIn" data-i="${i}" data-k="timeout_sec" min="1" max="1900" value="${a.timeout_sec||10}"></div>
+        <div class="ffield"><div class="lab">失败重试次数</div>
+          <input type="number" class="aIn" data-i="${i}" data-k="retries" min="0" max="3" value="${a.retries??1}"></div>
+        <div class="ffield"><div class="lab">把返回内容回复到会话
+          <label class="sw"><input type="checkbox" class="aReply" data-i="${i}" ${a.reply?'checked':''}><span class="sl"></span></label></div></div></div>
+      <div class="rpBox ${a.reply?'':'hide'}" data-i="${i}">
+        <div class="frow">
+          <div class="ffield"><div class="lab">提取字段<span class="tip">JSON 点路径，留空取整个响应</span></div>
+            <input type="text" class="aIn" data-i="${i}" data-k="reply_path"
+              placeholder="data.answer 或 choices.0.message.content" value="${esc(a.reply_path||'')}" style="font-family:var(--mono)"></div>
+          <div class="ffield"><div class="lab">回复模板</div>
+            <input type="text" class="aIn" data-i="${i}" data-k="reply_template" value="${esc(a.reply_template||'{result}')}"></div></div>
+        <div class="ffield"><div class="lab">回复到<span class="tip">不选 = 回到消息来源会话</span></div>
+          ${mselHTML('aRto'+i,PICKER,a.reply_to)}</div>
+        <div class="varhint" style="margin-bottom:8px">回复模板变量：<code>{result}</code> 接口返回/提取值，另支持 {content} {sender_name} 等。
+          请求体里可用 <code>{content_json}</code> <code>{sender_name_json}</code>(JSON 转义，放双引号内)，消息含引号/换行也不会拼坏 JSON</div>
+      </div></div></div>`;
+  }).join('');
+
+  M.actions.forEach((a,i)=>{
+    if(a.type==='forward') mselBind('aTgt'+i);
+    else mselBind('aRto'+i);});
+  $$('#actList .aIn').forEach(el=>el.onchange=()=>{
+    const a=M.actions[+el.dataset.i]; if(!a)return;
+    a[el.dataset.k]=el.type==='number'?+el.value:el.value; paintSum();});
+  $$('#actList .aReply').forEach(el=>el.onchange=()=>{
+    M.actions[+el.dataset.i].reply=el.checked;
+    document.querySelector(`.rpBox[data-i="${el.dataset.i}"]`).classList.toggle('hide',!el.checked);
+    paintSum();});
+  $$('#actList .ab').forEach(el=>el.onclick=()=>{
+    const i=+el.dataset.i,op=el.dataset.op;
+    collectActions();          // 先收集当前输入，避免重排丢内容
+    if(op==='del') M.actions.splice(i,1);
+    if(op==='up'&&i>0) [M.actions[i-1],M.actions[i]]=[M.actions[i],M.actions[i-1]];
+    if(op==='down'&&i<M.actions.length-1) [M.actions[i+1],M.actions[i]]=[M.actions[i],M.actions[i+1]];
+    renderActions();});
+  paintSum();
+}
+function collectActions(){
+  $$('#actList .aIn').forEach(el=>{
+    const a=M.actions[+el.dataset.i]; if(!a)return;
+    a[el.dataset.k]=el.type==='number'?+el.value:el.value;});
+  // 只读取“已经渲染出来”的多选器。动作卡片尚未渲染时(如刚打开编辑器)
+  // 若无条件覆盖，会把已保存的目标清成空数组——务必先判存在。
+  M.actions.forEach((a,i)=>{
+    if(a.type==='forward'){ if(MSEL['aTgt'+i]) a.targets=mselGet('aTgt'+i); }
+    else { if(MSEL['aRto'+i]) a.reply_to=mselGet('aRto'+i); }});
+}
+function collect(){
+  M.name=$('#fName').value.trim()||'未命名工作流';
+  M.enabled=$('#fOn').checked;
+  if(!M.trigger.schedule) M.trigger.schedule={};
+  const sc=M.trigger.schedule;
+  if($('#fSchTime')) sc.time=$('#fSchTime').value||'09:00';
+  if($('#fSchDate')) sc.date=$('#fSchDate').value||'';
+  if($('#fSchText')) sc.text=$('#fSchText').value||'';
+  if($('#wdBox')) sc.weekdays=$$('#wdBox input:checked').map(x=>+x.value);
+  M.trigger.sessions=mselGet('tSess');
+  M.trigger.senders=mselGet('tSender');
+  M.trigger.msg_types=$$('#mtBox input:checked').map(x=>+x.value);
+  M.trigger.content.keywords=chipsGet('tKw');
+  M.trigger.content.regex=($('#fRegex')?.value||'').trim();
+  M.cooldown_sec=+$('#fCd').value||0;
+  M.max_per_min=+$('#fRate').value||30;
+  M.serial=$('#fSerial').checked;
+  collectActions();
+}
+function validate(){
+  if(!M.actions.length) return '至少要有一个动作';
+  for(const a of M.actions){
+    if(a.type==='forward'&&!a.targets.length) return '「转发消息」还没选转发目标';
+    if(a.type==='http'&&!/^https?:\/\//.test(a.url||'')) return '「调用接口」的地址必须以 http(s):// 开头';
+  }
+  if(M.trigger.kind==='schedule'){
+    const sc=M.trigger.schedule||{};
+    if(sc.mode==='weekly'&&!(sc.weekdays||[]).length) return '定时「每周」至少要勾一个星期';
+    if(sc.mode==='once'){
+      if(!sc.date) return '定时「指定日期」还没选日期';
+      if(!nextFireTs(sc)) return '指定的日期时间已经过去了，请选未来的时间';
+    }
+    // 定时触发没有来源会话，回复目标必须显式指定，否则执行时必然失败
+    for(const a of M.actions)
+      if(a.type==='http'&&a.reply&&!(a.reply_to||[]).length)
+        return '定时触发没有来源会话，「调用接口」的回复目标必须指定';
+    return '';
+  }
+  const c=M.trigger.content;
+  if((c.mode==='any'||c.mode==='all')&&!c.keywords.length) return '选择了关键词匹配但没填关键词';
+  if(c.mode==='regex'&&!c.regex) return '选择了正则匹配但没填正则表达式';
+  return '';
+}
+$('#btnSave').onclick=async()=>{
+  collect();
+  const err=validate();
+  if(err){
+    // 校验失败时自动跳到出问题的那一步，别让人在别的步骤上猜
+    const step=/关键词|正则|星期|日期/.test(err)?1:2;
+    if(STEP!==step){gotoStep(step);renderActions();}
+    toast(err);return;
+  }
+  const i=WORKFLOWS.findIndex(w=>w.id===M.id);
+  if(i>=0) WORKFLOWS[i]=M; else WORKFLOWS.push(M);
+  if(await saveWfs()){renderWfs();closeEditor();toast('已保存');}
+  else toast('保存失败');
+};
+$('#btnDel').onclick=async()=>{
+  if(!confirm('确定删除该工作流？'))return;
+  const i=WORKFLOWS.findIndex(w=>w.id===M.id);
+  if(i>=0){WORKFLOWS.splice(i,1);await saveWfs();renderWfs();}
+  closeEditor();toast('已删除');
+};
+$('#btnTest').onclick=()=>{
+  collect(); gotoStep(3);          // 测试面板在第3步，先切过去
+  $('#testBox').classList.add('open');
+  $('#testBox').scrollIntoView({behavior:'smooth',block:'center'});
+};
+async function runTest(){
+  collect();
+  const btn=$('#btnRunTest');btn.disabled=true;
+  const out=$('#testOut');out.innerHTML='<div class="tres">运行中…</div>';
+  try{
+    const j=await api('gw/workflow-test',{workflow:M,run_http:$('#tsHttp').checked,
+      sample:{session:$('#tsSess').value.trim(),sender:$('#tsSender').value.trim(),
+        sender_name:$('#tsSname').value.trim(),content:$('#tsContent').value,
+        at_me:$('#tsAt').checked,msg_type:2,
+        sender_external:$('#tsUtype').value===''?null:+$('#tsUtype').value}});
+    if(!j.ok){out.innerHTML=`<div class="tres no">测试出错：${esc(j.error||'未知错误')}</div>`;}
+    else if(!j.matched){out.innerHTML=`<div class="tres no">❌ 未命中触发条件 —— ${esc(j.reason)}</div>`;}
+    else{
+      const rows=(j.results||[]).map(r=>`<div class="ln">
+        <span class="b">${r.ok?'✅':'❌'}</span>
+        <span><b>${r.action==='forward'?'转发':'接口'}</b> · ${esc(r.detail)}</span></div>`).join('');
+      out.innerHTML=`<div class="tres okk"><div class="ln"><span class="b">✅</span><span><b>命中触发条件</b></span></div>${rows}</div>`;}
+  }catch(e){out.innerHTML=`<div class="tres no">请求失败：${esc(e.message||e)}</div>`;}
+  btn.disabled=false;
+}
+
+// ==================== 运行记录(游标分页) ====================
+const RUN_PAGE=50;
+let RUN_PAGED=false;              // 是否已往下翻过历史(翻过就暂停自动刷新，避免打断浏览)
+function runRowHTML(r){
+  return `<tr>
+    <td class="c1">${fmtT(r.t)}</td>
+    <td><b>${esc(r.wf)}</b></td>
+    <td>${esc(r.source_name||r.source)}<div class="rdetail">${esc(r.sender||'')}</div></td>
+    <td style="max-width:260px">${esc(r.content)}</td>
+    <td>${(r.results||[]).map(x=>`<div class="rdetail" style="color:${x.ok?'var(--text-2)':'var(--red)'}">
+      ${x.ok?'✅':'❌'} ${x.action==='forward'?'转发':'接口'} · ${esc(x.detail)}</div>`).join('')||'—'}</td>
+  </tr>`;
+}
+function paintRuns(){
+  $('#runEmpty').classList.toggle('hide',!!RUNS.length);
+  $('#runMore').classList.toggle('hide',!RUN_MORE);
+  $('#runBody').innerHTML=RUNS.map(runRowHTML).join('');
+  $('#runCnt').textContent=RUNS.length?`已加载 ${RUNS.length} 条${RUN_MORE?' · 可加载更早':''}`:'';
+}
+async function loadRuns(){        // 刷新到第一页(最新)
+  RUN_PAGED=false;
+  const j=await api(`gw/workflow-runs?limit=${RUN_PAGE}`);
+  RUNS=j.runs||[]; RUN_MORE=!!j.has_more;
+  paintRuns();
+}
+async function loadMoreRuns(){    // 追加更早的一页
+  if(!RUNS.length) return loadRuns();
+  RUN_PAGED=true;
+  const before=RUNS[RUNS.length-1].seq;
+  const j=await api(`gw/workflow-runs?limit=${RUN_PAGE}&before=${before}`);
+  RUNS=RUNS.concat(j.runs||[]); RUN_MORE=!!j.has_more;
+  paintRuns();
+}
+$('#btnRunRefresh').onclick=loadRuns;
+$('#btnRunMore').onclick=loadMoreRuns;
+// 自动刷新只在“停留在最新一页”时更新，翻阅历史时不打断
+setInterval(()=>{if(!$('#pane-runs').classList.contains('hide')&&!RUN_PAGED)loadRuns();},6000);
+
+// ==================== 状态监控 ====================
+async function loadStatus(){
+  try{
+    const s=await api('gw/status');
+    const h=s.health||{},st=s.stats||{},so=s.store||{},w=s.workflow||{};
+    const up=s.uptime||0,d=Math.floor(up/86400),hh=Math.floor(up%86400/3600),mm=Math.floor(up%3600/60);
+    const items=[
+      ['运行时长',(d?d+'天':'')+hh+'时'+mm+'分','sm'],
+      ['DLL / 登录',h.healthy===null?'检测中':(h.healthy?'正常':(h.logged_in===false?'企微掉线':'DLL 未就绪')),'sm'],
+      ['本次收到消息',st.received||0],
+      ['本次转发/回复',st.forwarded||0],
+      ['历史消息(库)',so.messages||0],
+      ['会话数(库)',so.sessions||0],
+      ['工作流',`${w.enabled||0}/${w.count||0} 启用`,'sm'],
+      ['工作流触发',(w.runs||0)+(w.fails?` (失败${w.fails})`:''),'sm'],
+      ['实时连接数',s.sse_clients||0],
+    ];
+    $('#statGrid').innerHTML=items.map(([k,v,sm])=>
+      `<div class="stat"><div class="k">${k}</div><div class="v ${sm||''}">${esc(v)}</div></div>`).join('');
+  }catch(e){}
+}
+async function loadLogs(){
+  try{const j=await api('gw/logs');
+    $('#logBox').innerHTML=(j.logs||[]).map(l=>
+      `<div class="${l.level==='WARNING'?'lw':(l.level==='ERROR'?'le':'')}"><span class="lt">${esc(l.t)}</span>${esc(l.msg)}</div>`).join('')
+      ||'<div style="color:#6b7280">暂无日志</div>';
+    $('#logBox').scrollTop=$('#logBox').scrollHeight;}catch(e){}
+}
+$('#btnLogRefresh').onclick=()=>{loadStatus();loadLogs();};
+setInterval(()=>{if(!$('#pane-status').classList.contains('hide')){loadStatus();loadLogs();}},5000);
+
+// ==================== 原始推送 ====================
+let RAW=[], RAW_SEQ=0, RAW_FILTER='', RAW_ON=false, RAW_OPEN=new Set();
+
+// 折叠时在标题行给一句话预览，一眼能认出是哪条
+function rawPreview(raw){
+  return String(raw||'').replace(/\s+/g,' ').replace(/^\{\s*/,'').slice(0,120);
+}
+function rawItemHTML(it){
+  const open=RAW_OPEN.has(it.seq);
+  const tag=it.handled?'<span class="tag ok">已接管</span>'
+                      :'<span class="tag no">未接管</span>';
+  return `<div class="rawit ${open?'open':''}" data-seq="${it.seq}">
+    <div class="rawhd">
+      <span class="tm">${esc(fmtT(it.t))}</span>
+      <span class="tp">${it.type}</span>
+      <span class="nm">${esc(it.name)}</span>${tag}
+      <span class="pv">${esc(rawPreview(it.raw))}</span>
+      <button class="cp" data-copy="${it.seq}">复制</button>
+    </div>
+    <div class="rawbd">${esc(it.raw)}</div></div>`;
+}
+function renderRaw(){
+  const list=RAW_FILTER?RAW.filter(i=>String(i.type)===RAW_FILTER):RAW;
+  $('#rawCnt').textContent=RAW.length?`${list.length} 条${RAW_FILTER?' / 共 '+RAW.length:''}`:'';
+  $('#rawOff').classList.toggle('hide',RAW_ON);
+  $('#rawEmpty').classList.toggle('hide',!(RAW_ON&&!list.length));
+  // 最新的在最上面
+  $('#rawList').innerHTML=list.slice().reverse().map(rawItemHTML).join('');
+}
+function syncRawFilter(hist,names){
+  const sel=$('#rawFilter'), keep=sel.value;
+  const opts=Object.keys(hist).sort((a,b)=>hist[b]-hist[a])
+    .map(t=>`<option value="${t}">${t} ${esc(names[t]||'未知类型')} (${hist[t]})</option>`);
+  sel.innerHTML='<option value="">全部类型</option>'+opts.join('');
+  sel.value=keep; RAW_FILTER=sel.value;
+}
+async function loadRaw(inc){
+  try{
+    // inc=true 时只拉新增的(after=最后 seq)，长时间开着也不会反复传全量
+    const j=await api('gw/raw-pushes'+(inc&&RAW_SEQ?'?after='+RAW_SEQ:''));
+    RAW_ON=!!j.on;
+    $('#rawToggle').checked=RAW_ON;
+    const fresh=j.list||[];
+    if(inc&&RAW_SEQ){
+      if(fresh.length){ RAW=RAW.concat(fresh); }
+    }else{ RAW=fresh; }
+    if(RAW.length){ RAW_SEQ=RAW[RAW.length-1].seq; }
+    const cap=1000; if(RAW.length>cap) RAW=RAW.slice(-cap);
+    syncRawFilter(j.hist||{}, j.names||{});
+    renderRaw();
+    // 不在本页时来了新推送，导航上点个绿点
+    if(fresh.length&&$('#pane-raw').classList.contains('hide'))
+      $('#rawDot').classList.remove('hide');
+  }catch(e){}
+}
+$('#rawFilter').onchange=e=>{RAW_FILTER=e.target.value;renderRaw();};
+$('#rawList').addEventListener('click',e=>{
+  const cp=e.target.closest('[data-copy]');
+  if(cp){
+    const it=RAW.find(x=>x.seq==cp.dataset.copy);
+    if(it){ navigator.clipboard.writeText(it.raw).then(
+      ()=>toast('已复制原文'),()=>toast('复制失败，请手动选中')); }
+    return;
+  }
+  const box=e.target.closest('.rawit');
+  if(!box) return;
+  const seq=+box.dataset.seq;
+  if(RAW_OPEN.has(seq)) RAW_OPEN.delete(seq); else RAW_OPEN.add(seq);
+  box.classList.toggle('open');
+});
+$('#rawToggle').onchange=async e=>{
+  const on=e.target.checked;
+  await api('gw/config',{debug:{raw_push:on}});
+  $('#cfgRawOn').checked=on;
+  toast(on?'已开启原始推送抓取':'已关闭');
+  RAW_SEQ=0; loadRaw(false);
+};
+$('#btnRawClear').onclick=async()=>{
+  const j=await api('gw/raw-clear',{});
+  RAW=[];RAW_SEQ=0;RAW_OPEN.clear();renderRaw();
+  toast(`已清空 ${j.cleared||0} 条`);
+};
+setInterval(()=>{
+  if(!$('#pane-raw').classList.contains('hide')) loadRaw(true);
+  else if(RAW_ON) loadRaw(true);        // 不在本页也拉，用于导航小绿点提示
+},2500);
+
+// ==================== 系统设置 ====================
+async function loadCfg(){
+  try{const c=await api('gw/config');
+    $('#cfgLoader').value=c.loader_dll||'';$('#cfgHelper').value=c.helper_dll||'';
+    $('#cfgExe').value=c.wxwork_exe||'';$('#cfgPort').value=c.listen_port||9000;
+    $('#cfgKeep').value=(c.storage||{}).max_msg_per_session??5000;
+    const h=c.health||{};
+    $('#cfgHcOn').checked=h.enabled!==false;$('#cfgHcInt').value=h.interval_sec||60;
+    $('#cfgHook').value=h.webhook_url||'';$('#cfgHcRec').checked=h.alert_on_recovery!==false;
+    const dbg=c.debug||{};
+    $('#cfgRawOn').checked=!!dbg.raw_push;$('#cfgRawMax').value=dbg.raw_max||300;
+    $('#rawWarn').classList.toggle('hide',!dbg.raw_push);}catch(e){}
+}
+$('#btnSaveCfg').onclick=async()=>{
+  const j=await api('gw/config',{
+    loader_dll:$('#cfgLoader').value.trim(),helper_dll:$('#cfgHelper').value.trim(),
+    wxwork_exe:$('#cfgExe').value.trim(),listen_port:+$('#cfgPort').value||9000,
+    storage:{max_msg_per_session:+$('#cfgKeep').value||0},
+    health:{enabled:$('#cfgHcOn').checked,interval_sec:+$('#cfgHcInt').value||60,
+      webhook_url:$('#cfgHook').value.trim(),alert_on_recovery:$('#cfgHcRec').checked},
+    debug:{raw_push:$('#cfgRawOn').checked,
+           raw_max:Math.min(1000,Math.max(20,+$('#cfgRawMax').value||300))}});
+  $('#rawWarn').classList.toggle('hide',!$('#cfgRawOn').checked);
+  $('#rawToggle').checked=$('#cfgRawOn').checked;
+  RAW_SEQ=0; loadRaw(false);
+  toast(j.ok?'已保存（端口/存储改动需重启生效）':'保存失败');
+};
+$('#cfgRawOn').onchange=e=>$('#rawWarn').classList.toggle('hide',!e.target.checked);
+$('#btnTestHook').onclick=async()=>{
+  const j=await api('gw/test-webhook',{});
+  toast(j.ok?'已发送，请到企微群查看':'发送失败：'+(j.error||'未配置'));
+};
+
+// ==================== 启动 ====================
+(function(){ loadWfs(); loadPicker(); })();
+</script>
+</body>
+</html>

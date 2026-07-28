@@ -1,0 +1,40 @@
+{
+  "listen_addr": "127.0.0.1",
+  "listen_port": 9000,
+  "jjy": {
+    "enabled": true,
+    "allow_company": [
+      "your-company-id"
+    ],
+    "bot_name": "你的机器人昵称",
+    "dedup_max": 4000
+  },
+  "storage": {
+    "db_file": "gateway.db",
+    "max_msg_per_session": 5000,
+    "max_workflow_runs": 2000
+  },
+  "media": {
+    "enabled": true,
+    "dir": "media",
+    "image_auto": true,
+    "auto_download_mb": 50,
+    "video_auto": false,
+    "voice_auto": false,
+    "keep_days": 3,
+    "workers": 2,
+    "max_tries": 3
+  },
+  "health": {
+    "enabled": true,
+    "interval_sec": 60,
+    "webhook_url": "",
+    "alert_on_recovery": true,
+    "max_backlog": 200,
+    "stale_minutes": 0
+  },
+  "debug": {
+    "raw_push": false,
+    "raw_max": 300
+  }
+}

@@ -1,0 +1,936 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>会话消息 · 企业微信消息网关</title>
+<link rel="icon" href='data:image/svg+xml,<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"><rect width="24" height="24" rx="6" fill="%2307c160"/><path d="M18 6 11 13M18 6l-5 14-2-6-6-2z" stroke="white" stroke-width="1.8" fill="none" stroke-linecap="round" stroke-linejoin="round"/></svg>'>
+<style>
+  *{box-sizing:border-box;margin:0;padding:0}
+  :root{
+    --bg:#f2f3f5; --panel:#fff;
+    --border:#e9ebee; --border-2:#dde0e5;
+    --text:#191b1f; --text-2:#5c636e; --text-3:#9aa0a8;
+    --brand:#07c160; --brand-d:#06ad56; --brand-weak:#e9f8ef;
+    --self:#95ec69; --self-text:#122a0e;
+    --red:#fa5151; --red-bg:#fdeeee;
+    --amber:#c98a2d; --amber-bg:#fdf6ec;
+    --sh-pop:0 24px 64px -16px rgba(16,20,28,.30),0 8px 24px -12px rgba(16,20,28,.14);
+    --mono:ui-monospace,"SF Mono",Menlo,Consolas,monospace;
+  }
+  html{-webkit-font-smoothing:antialiased;text-rendering:optimizeLegibility}
+  html,body{height:100%}
+  body{font-family:"PingFang SC","Microsoft YaHei",-apple-system,BlinkMacSystemFont,"Segoe UI",sans-serif;
+       background:var(--bg);color:var(--text);font-size:13.5px;line-height:1.6;
+       display:flex;overflow:hidden}
+
+  svg.ic{width:16px;height:16px;stroke:currentColor;fill:none;stroke-width:1.8;
+         stroke-linecap:round;stroke-linejoin:round;flex-shrink:0}
+
+  /* ================= 侧栏 ================= */
+  .side{width:296px;flex-shrink:0;background:var(--panel);border-right:1px solid var(--border);
+        display:flex;flex-direction:column}
+  .side-top{display:flex;align-items:center;gap:9px;padding:16px 14px 10px}
+  .logo{width:27px;height:27px;border-radius:8px;background:linear-gradient(155deg,#12cf6c,#059e4f);
+        display:grid;place-items:center;box-shadow:0 2px 7px rgba(7,193,96,.3);flex-shrink:0}
+  .logo svg{width:15px;height:15px;stroke:#fff;fill:none;stroke-width:2.2;
+            stroke-linecap:round;stroke-linejoin:round}
+  .side-top b{font-size:16px;font-weight:700;letter-spacing:.2px}
+  .sdot{width:8px;height:8px;border-radius:50%;background:#c9ced6;margin-left:2px;flex-shrink:0}
+  .sdot.ok{background:var(--brand);box-shadow:0 0 0 3px rgba(7,193,96,.15)}
+  .sdot.warn{background:#e6a23c;box-shadow:0 0 0 3px rgba(230,162,60,.15)}
+  .sdot.bad{background:var(--red);box-shadow:0 0 0 3px rgba(250,81,81,.15)}
+  .side-top .sp{flex:1}
+  .icobtn{width:30px;height:30px;border-radius:8px;display:grid;place-items:center;cursor:pointer;
+          color:var(--text-2);text-decoration:none;border:none;background:none;transition:.13s}
+  .icobtn:hover{background:var(--bg);color:var(--text)}
+  .icobtn:disabled{opacity:.5;cursor:default}
+  @keyframes rot{to{transform:rotate(360deg)}}
+  .icobtn.spin svg{animation:rot 1s linear infinite}
+
+  .search{margin:0 12px 10px;position:relative}
+  .search svg{position:absolute;left:10px;top:50%;transform:translateY(-50%);width:14px;height:14px;
+              stroke:var(--text-3);fill:none;stroke-width:2;stroke-linecap:round;pointer-events:none}
+  .search input{width:100%;padding:8px 12px 8px 31px;border:none;border-radius:9px;
+                font-size:13px;font-family:inherit;background:var(--bg);transition:.15s;color:var(--text)}
+  .search input::placeholder{color:var(--text-3)}
+  .search input:focus{outline:none;background:#fff;box-shadow:0 0 0 2px var(--brand)}
+
+  .banner{display:none;margin:0 12px 8px;padding:8px 12px;border-radius:9px;font-size:12px;line-height:1.5}
+  .banner.warn{display:block;background:var(--amber-bg);color:var(--amber)}
+  .banner.bad{display:block;background:var(--red-bg);color:var(--red)}
+
+  .side-list{flex:1;overflow-y:auto;padding:2px 8px 12px}
+  .wa-item{display:flex;gap:10px;padding:9px 10px;border-radius:11px;cursor:pointer;align-items:center;
+           transition:background .12s}
+  .wa-item:hover{background:#f5f6f8}
+  .wa-item.on{background:var(--brand-weak)}
+  .wa-ava{width:42px;height:42px;border-radius:12px;flex-shrink:0;display:grid;place-items:center;
+          color:#fff;font-size:13.5px;font-weight:600;letter-spacing:-.3px}
+  .wa-item .mid{flex:1;min-width:0}
+  .wa-item .r1{display:flex;align-items:center;gap:6px}
+  .wa-item .nm{font-weight:600;font-size:13.5px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;flex:1;min-width:0}
+  .wa-item .tm{font-size:11px;color:var(--text-3);white-space:nowrap;flex-shrink:0}
+  .wa-item .r2{display:flex;align-items:center;gap:6px;margin-top:2px}
+  .wa-item .pv{color:var(--text-3);font-size:12px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;flex:1;min-width:0}
+  .wa-badge{background:var(--red);color:#fff;font-size:10.5px;min-width:17px;height:17px;border-radius:999px;
+            display:grid;place-items:center;padding:0 5px;font-weight:600;flex-shrink:0}
+  .gtag{font-size:10px;color:var(--text-3);border:1px solid var(--border-2);border-radius:4px;
+        padding:0 4px;line-height:15px;font-weight:400;flex-shrink:0}
+
+  /* ================= 主区 ================= */
+  .main{flex:1;display:flex;flex-direction:column;min-width:0;position:relative}
+  .main-hd{height:58px;padding:0 22px;background:var(--panel);border-bottom:1px solid var(--border);
+           display:flex;align-items:center;gap:11px;flex-shrink:0}
+  .main-hd .h-ava{width:34px;height:34px;border-radius:10px;flex-shrink:0;display:grid;place-items:center;
+                  color:#fff;font-size:12.5px;font-weight:600}
+  .main-hd .nm{font-weight:650;font-size:15px}
+
+  .msgs{flex:1;overflow-y:auto;padding:20px 26px 10px;display:flex;flex-direction:column}
+  .wa-more{align-self:center;font-size:11.5px;color:var(--text-3);cursor:pointer;user-select:none;
+           padding:3px 12px;border-radius:999px;margin-bottom:2px}
+  .wa-more:hover{background:#e9ebee;color:var(--text-2)}
+  .wa-more.dim{cursor:default;color:#c3c8cf}
+  .wa-more.dim:hover{background:none;color:#c3c8cf}
+  .wa-tdiv{align-self:center;font-size:11px;color:var(--text-3);margin-top:20px;flex-shrink:0}
+
+  .wa-row{display:flex;gap:10px;max-width:66%;margin-top:16px}
+  .wa-row.grp{margin-top:4px}
+  .wa-row.me{align-self:flex-end;flex-direction:row-reverse}
+  .wa-row .a{width:36px;height:36px;border-radius:10px;flex-shrink:0;display:grid;place-items:center;
+             color:#fff;font-size:12.5px;font-weight:600;letter-spacing:-.3px}
+  .wa-row.grp .a{visibility:hidden;height:0}
+  .wa-row .col{min-width:0;display:flex;flex-direction:column}
+  .wa-row.me .col{align-items:flex-end}
+  .wa-who{font-size:11.5px;color:var(--text-3);margin:0 2px 4px}
+  .wa-bubble{background:var(--panel);border-radius:12px;padding:9px 13px;
+             font-size:14px;line-height:1.65;word-break:break-word;white-space:pre-wrap;
+             box-shadow:0 1px 2px rgba(15,18,26,.05)}
+  .wa-row:not(.me):not(.grp) .wa-bubble{border-top-left-radius:5px}
+  .wa-row.me .wa-bubble{background:var(--self);color:var(--self-text)}
+  .wa-row.me:not(.grp) .wa-bubble{border-top-right-radius:5px}
+  .wa-row.pending{opacity:.55}
+  .wa-row.failed{cursor:pointer}
+  .wa-row.me.failed .wa-bubble{background:var(--red-bg);color:var(--red);box-shadow:inset 0 0 0 1px var(--red)}
+  .wa-fail-hint{font-size:11px;color:var(--red);margin:3px 2px 0}
+
+  /* ---- 媒体：图片 / 文件卡片 ---- */
+  /* white-space 必须改回 normal：.wa-bubble 为文本消息设了 pre-wrap，
+     媒体是拼出来的 HTML，模板里的缩进换行会被当成真实换行把卡片撑高 */
+  .wa-bubble.media{padding:0;overflow:hidden;background:transparent;box-shadow:none;
+                   white-space:normal;line-height:normal}
+  .wa-img{display:block;max-width:230px;max-height:300px;border-radius:10px;cursor:zoom-in;
+          object-fit:cover;background:var(--border);box-shadow:0 1px 2px rgba(15,18,26,.08)}
+  .wa-ph{width:150px;height:110px;border-radius:10px;background:var(--panel);
+         display:flex;align-items:center;justify-content:center;flex-direction:column;gap:6px;
+         font-size:11.5px;color:var(--text-3);box-shadow:0 1px 2px rgba(15,18,26,.05)}
+  .wa-ph.err{color:var(--red);background:var(--red-bg);cursor:pointer}
+  /* 图文(11068)：正文 + 多图网格 */
+  .wa-imgtext{background:var(--panel);border-radius:12px;padding:10px 12px;max-width:340px;
+              box-shadow:0 1px 2px rgba(15,18,26,.05)}
+  .wa-imgtext .tx{font-size:14px;line-height:1.65;white-space:pre-wrap;
+                  word-break:break-word;margin-bottom:8px}
+  .wa-grid{display:grid;grid-template-columns:repeat(auto-fill,minmax(96px,1fr));gap:5px}
+  .wa-grid .wa-img,.wa-grid .wa-ph{width:100%;max-width:none;height:96px;border-radius:7px}
+  .wa-grid .wa-ph{font-size:10.5px;gap:4px}
+  .wa-spin{width:16px;height:16px;border:2px solid var(--border-2);border-top-color:var(--brand);
+           border-radius:50%;animation:spin .7s linear infinite}
+  @keyframes spin{to{transform:rotate(360deg)}}
+
+  .wa-file{display:flex;align-items:center;gap:11px;background:var(--panel);border-radius:10px;
+           padding:11px 13px;min-width:210px;max-width:290px;text-decoration:none;color:inherit;
+           box-shadow:0 1px 2px rgba(15,18,26,.05);cursor:pointer;transition:.14s}
+  .wa-file:hover{background:var(--brand-weak)}
+  .wa-row.me .wa-file{background:var(--panel)}
+  .wa-fico{width:36px;height:36px;flex-shrink:0;border-radius:8px;background:var(--brand-weak);
+           color:var(--brand);display:flex;align-items:center;justify-content:center;
+           font-size:11px;font-weight:700;text-transform:uppercase}
+  .wa-fico.big{background:var(--amber-bg);color:var(--amber)}
+  .wa-fmid{min-width:0;flex:1}
+  .wa-fnm{font-size:13.5px;font-weight:500;line-height:1.35;word-break:break-all;
+          display:-webkit-box;-webkit-line-clamp:2;-webkit-box-orient:vertical;overflow:hidden}
+  .wa-fsz{font-size:11.5px;color:var(--text-3);margin-top:3px}
+  .wa-fsz.act{color:var(--brand);font-weight:600}
+  .wa-fsz.err{color:var(--red)}
+
+  /* ---- 撤回：原消息留档，只展示成一行系统提示 ---- */
+  .wa-revoked{text-align:center;margin:8px 0;font-size:11.5px;color:var(--text-3)}
+
+  /* ---- 富文本卡片(链接/位置/名片/小程序) ---- */
+  .wa-rich{display:block;background:var(--panel);border-radius:10px;padding:10px 12px;
+           min-width:180px;max-width:290px;text-decoration:none;color:inherit;
+           box-shadow:0 1px 2px rgba(15,18,26,.05);transition:.14s}
+  a.wa-rich:hover{background:var(--brand-weak)}
+  .wa-rich .rt{font-size:13.5px;font-weight:600;line-height:1.4;word-break:break-word;
+               display:-webkit-box;-webkit-line-clamp:2;-webkit-box-orient:vertical;overflow:hidden}
+  .wa-rich .rd{font-size:11.5px;color:var(--text-2);margin-top:4px;line-height:1.5;
+               display:-webkit-box;-webkit-line-clamp:2;-webkit-box-orient:vertical;overflow:hidden}
+  .wa-rich .rf{font-size:11px;color:var(--text-3);margin-top:7px;display:flex;
+               align-items:center;gap:5px;padding-top:7px;border-top:1px solid var(--border)}
+  .wa-rich .rf .k{background:var(--bg);border-radius:4px;padding:1px 6px;flex-shrink:0}
+  .wa-rich .rf .v{white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+
+  .lightbox{position:fixed;inset:0;background:rgba(10,12,16,.86);z-index:99;display:none;
+            align-items:center;justify-content:center;cursor:zoom-out}
+  .lightbox.on{display:flex}
+  .lightbox img{max-width:92vw;max-height:92vh;border-radius:6px}
+  .lightbox a{position:absolute;right:26px;top:22px;color:#fff;font-size:13px;
+              background:rgba(255,255,255,.14);padding:8px 15px;border-radius:8px;
+              text-decoration:none;backdrop-filter:blur(6px)}
+
+  .newpill{position:absolute;right:28px;bottom:98px;background:var(--panel);color:var(--brand);
+           font-size:12px;font-weight:600;padding:7px 14px;border-radius:999px;cursor:pointer;
+           box-shadow:0 6px 20px -4px rgba(15,18,26,.25);opacity:0;pointer-events:none;
+           transform:translateY(6px);transition:.18s;z-index:20}
+  .newpill.on{opacity:1;pointer-events:auto;transform:translateY(0)}
+
+  .inputwrap{padding:10px 22px 18px;flex-shrink:0}
+  .input{background:var(--panel);border-radius:13px;box-shadow:0 1px 3px rgba(15,18,26,.06);
+         display:flex;align-items:flex-end;padding:8px 8px 8px 16px;gap:10px;transition:.15s}
+  .input:focus-within{box-shadow:0 0 0 2px var(--brand),0 1px 3px rgba(15,18,26,.06)}
+  .input textarea{flex:1;border:none;resize:none;min-height:26px;max-height:120px;padding:5px 0;
+                  font-size:14px;font-family:inherit;line-height:1.55;background:transparent;color:var(--text)}
+  .input textarea::placeholder{color:var(--text-3)}
+  .input textarea:focus{outline:none}
+  .sendbtn{width:36px;height:36px;border-radius:10px;background:var(--brand);border:none;cursor:pointer;
+           display:grid;place-items:center;color:#fff;flex-shrink:0;transition:.13s}
+  .sendbtn:hover{background:var(--brand-d)}
+  .sendbtn:active{transform:translateY(.5px)}
+  .sendbtn svg{width:17px;height:17px}
+
+  .none{margin:auto;text-align:center;color:var(--text-3);padding:40px;font-size:13px;line-height:2.1}
+  .none svg{width:44px;height:44px;stroke:#d3d7dd;fill:none;stroke-width:1.3;
+            stroke-linecap:round;stroke-linejoin:round;margin-bottom:6px}
+  .side-list .none{margin:0;padding:44px 20px}
+  /* ---- 原始推送抽屉：纯前端展示，不入库、不触发工作流 ---- */
+  .icobtn{position:relative}
+  .icobtn.on{background:var(--brand-weak);color:var(--brand-d)}
+  .icobtn .rdot{position:absolute;top:4px;right:4px;width:6px;height:6px;
+                border-radius:50%;background:var(--brand);box-shadow:0 0 0 2px var(--panel)}
+  .icobtn.sm{width:26px;height:26px}
+
+  /* 尺寸走 flex-basis 而不是 width：body 是 flex 行容器、兄弟 .main 是 flex:1(basis 0%)，
+     这种情况下抽屉的 width 会被 flex 基准尺寸吃掉，实测只剩 1px 边框。
+     另外这里刻意不加任何 transition —— 实测过渡跑不完会把抽屉卡在起始值(0 宽 / 全透明)，
+     调试面板不需要动画，开合瞬时生效反而没有任何布局风险。 */
+  .rawdrawer{flex:0 0 0px;background:var(--panel);overflow:hidden;
+             display:flex;flex-direction:column}
+  .rawdrawer.on{flex-basis:410px;border-left:1px solid var(--border)}
+  @media (max-width:1200px){ .rawdrawer.on{flex-basis:330px} }
+  .rd-hd{height:58px;flex-shrink:0;display:flex;align-items:center;gap:8px;
+         padding:0 10px 0 16px;border-bottom:1px solid var(--border)}
+  .rd-hd b{font-size:14px;white-space:nowrap}
+  .rd-hd .ic{width:15px;height:15px;color:var(--text-2)}
+  .rd-hd .n{font-size:11.5px;color:var(--text-3);white-space:nowrap}
+  .rd-hd .sp{flex:1}
+  .rd-chk{display:flex;align-items:center;gap:4px;font-size:11.5px;color:var(--text-2);
+          cursor:pointer;white-space:nowrap;user-select:none}
+  .rd-chk input{margin:0;cursor:pointer}
+  .rd-body{flex:1;overflow-y:auto;padding:10px 12px}
+
+  .rd-off{background:var(--amber-bg);color:var(--amber);border-radius:9px;
+          padding:12px 14px;font-size:12px;line-height:1.75}
+  .rd-off button{margin-top:9px;background:var(--amber);color:#fff;border:none;
+                 border-radius:7px;padding:6px 13px;font-size:12px;font-weight:600;
+                 cursor:pointer;font-family:inherit}
+  .rd-empty{color:var(--text-3);font-size:12px;text-align:center;padding:36px 10px;line-height:1.8}
+
+  .rd-it{border:1px solid var(--border);border-radius:9px;margin-bottom:7px;overflow:hidden}
+  .rd-it .h{display:flex;align-items:center;gap:7px;padding:8px 10px;cursor:pointer;
+            font-size:11.5px;transition:.12s;user-select:none}
+  .rd-it .h:hover{background:var(--bg)}
+  .rd-it .tm{color:var(--text-3);font-family:var(--mono);font-size:11px;flex-shrink:0}
+  .rd-it .tp{font-family:var(--mono);font-weight:700;color:#636df0;flex-shrink:0}
+  .rd-it .nm{font-weight:600;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;flex:1;min-width:0}
+  .rd-it .tag{font-size:10px;padding:1px 6px;border-radius:999px;flex-shrink:0;font-weight:600}
+  .rd-it .tag.ok{background:var(--brand-weak);color:var(--brand-d)}
+  .rd-it .tag.no{background:var(--amber-bg);color:var(--amber)}
+  .rd-it .bd{display:none;background:#16181d;color:#c8cdd6;font-family:var(--mono);
+             font-size:11px;line-height:1.7;padding:11px 13px;white-space:pre;
+             overflow:auto;max-height:300px}
+  .rd-it.open .bd{display:block}
+  .rd-it .cp{position:sticky;top:0;float:right;font-size:10.5px;color:#8b93a1;
+             background:rgba(255,255,255,.08);border:none;border-radius:5px;
+             padding:2px 8px;cursor:pointer;font-family:inherit}
+  .rd-it .cp:hover{color:#fff;background:rgba(255,255,255,.18)}
+
+  .hide{display:none!important}
+
+  .toast{position:fixed;bottom:26px;left:50%;transform:translateX(-50%) translateY(8px);
+         background:#181b21;color:#fff;padding:11px 20px;border-radius:10px;font-size:13px;
+         z-index:200;opacity:0;transition:.24s;pointer-events:none;box-shadow:var(--sh-pop);font-weight:500}
+  .toast.on{opacity:1;transform:translateX(-50%) translateY(0)}
+
+  ::-webkit-scrollbar{width:8px}
+  ::-webkit-scrollbar-thumb{background:transparent;border-radius:4px}
+  .side-list:hover::-webkit-scrollbar-thumb,.msgs:hover::-webkit-scrollbar-thumb{background:#d5d9df}
+
+  @media (max-width:900px){ .side{width:240px} }
+</style>
+</head>
+<body>
+
+<!-- 线性图标 -->
+<svg width="0" height="0" style="position:absolute" aria-hidden="true"><defs>
+  <symbol id="i-send" viewBox="0 0 24 24"><path d="M22 2 11 13"/><path d="M22 2 15 22 11 13 2 9z"/></symbol>
+  <symbol id="i-chat" viewBox="0 0 24 24"><path d="M21 15a2 2 0 0 1-2 2H7l-4 4V5a2 2 0 0 1 2-2h14a2 2 0 0 1 2 2z"/></symbol>
+  <symbol id="i-gear" viewBox="0 0 24 24"><circle cx="12" cy="12" r="3"/><path d="M19.4 15a1.65 1.65 0 0 0 .33 1.82l.06.06a2 2 0 1 1-2.83 2.83l-.06-.06a1.65 1.65 0 0 0-1.82-.33 1.65 1.65 0 0 0-1 1.51V21a2 2 0 1 1-4 0v-.09A1.65 1.65 0 0 0 9 19.4a1.65 1.65 0 0 0-1.82.33l-.06.06a2 2 0 1 1-2.83-2.83l.06-.06a1.65 1.65 0 0 0 .33-1.82 1.65 1.65 0 0 0-1.51-1H3a2 2 0 1 1 0-4h.09A1.65 1.65 0 0 0 4.6 9a1.65 1.65 0 0 0-.33-1.82l-.06-.06a2 2 0 1 1 2.83-2.83l.06.06a1.65 1.65 0 0 0 1.82.33H9a1.65 1.65 0 0 0 1-1.51V3a2 2 0 1 1 4 0v.09a1.65 1.65 0 0 0 1 1.51 1.65 1.65 0 0 0 1.82-.33l.06-.06a2 2 0 1 1 2.83 2.83l-.06.06a1.65 1.65 0 0 0-.33 1.82V9a1.65 1.65 0 0 0 1.51 1H21a2 2 0 1 1 0 4h-.09a1.65 1.65 0 0 0-1.51 1z"/></symbol>
+  <symbol id="i-search" viewBox="0 0 24 24"><circle cx="11" cy="11" r="8"/><path d="m21 21-4.3-4.3"/></symbol>
+  <symbol id="i-sync" viewBox="0 0 24 24"><path d="M21 12a9 9 0 1 1-2.64-6.36"/><path d="M21 3v6h-6"/></symbol>
+  <symbol id="i-term" viewBox="0 0 24 24"><path d="m4 17 6-5-6-5"/><path d="M12 19h8"/></symbol>
+  <symbol id="i-x" viewBox="0 0 24 24"><path d="M18 6 6 18M6 6l12 12"/></symbol>
+</defs></svg>
+
+<!-- ================= 侧栏 ================= -->
+<aside class="side">
+  <div class="side-top">
+    <div class="logo"><svg><use href="#i-send"/></svg></div>
+    <b>消息</b>
+    <span class="sdot" id="statusDot" title="检测中…"></span>
+    <span class="sp"></span>
+    <button class="icobtn" id="waSync" title="同步通讯录"><svg class="ic"><use href="#i-sync"/></svg></button>
+    <button class="icobtn" id="rawBtn" title="原始推送(调试)"><svg class="ic"><use href="#i-term"/></svg><span class="rdot hide" id="rawBtnDot"></span></button>
+    <a class="icobtn" href="/admin" title="管理后台"><svg class="ic"><use href="#i-gear"/></svg></a>
+  </div>
+  <div class="search">
+    <svg><use href="#i-search"/></svg>
+    <input id="waSearch" placeholder="搜索">
+  </div>
+  <div class="banner" id="statusBanner"></div>
+  <div class="side-list" id="waList">
+    <div class="none"><svg><use href="#i-chat"/></svg><br>还没有消息<br>收到企微消息后会自动出现</div>
+  </div>
+</aside>
+
+<!-- ================= 主区 ================= -->
+<section class="main">
+  <div id="waMainHd" class="main-hd hide">
+    <div class="h-ava" id="waAva"></div>
+    <div class="nm" id="waTitle"></div>
+    <span class="gtag" id="waTag"></span>
+  </div>
+  <div class="msgs" id="waMsgs">
+    <div class="none"><svg><use href="#i-chat"/></svg><br>选择一个会话开始</div>
+  </div>
+  <div class="newpill" id="newPill"></div>
+  <div class="inputwrap hide" id="waInputBox">
+    <div class="input">
+      <textarea id="waText" rows="1" placeholder="输入消息…"></textarea>
+      <button class="sendbtn" id="waSend" title="发送 (Enter)"><svg class="ic"><use href="#i-send"/></svg></button>
+    </div>
+  </div>
+</section>
+
+<!-- ================= 原始推送抽屉(调试用, 纯展示: 不入库/不触发工作流) ================= -->
+<aside class="rawdrawer" id="rawDrawer">
+  <div class="rd-hd">
+    <svg class="ic"><use href="#i-term"/></svg>
+    <b>原始推送</b>
+    <span class="n" id="rdCnt"></span>
+    <span class="sp"></span>
+    <label class="rd-chk" title="只看当前会话相关的推送">
+      <input type="checkbox" id="rdOnlyCur"><span>本会话</span></label>
+    <button class="icobtn sm" id="rdClose" title="关闭"><svg class="ic"><use href="#i-x"/></svg></button>
+  </div>
+  <div class="rd-body" id="rdBody"></div>
+</aside>
+
+<div class="toast" id="toast"></div>
+
+<div class="lightbox" id="waLightbox">
+  <a id="waLbDl" download>下载原图</a>
+  <img id="waLbImg" alt="">
+</div>
+
+<script>
+// ==================== 基础 ====================
+const $ = s => document.querySelector(s);
+const api = async (p, body) => {
+  const opt = body ? {method:'POST',headers:{'Content-Type':'application/json'},
+                      body:JSON.stringify(body)} : {};
+  const r = await fetch(p, opt);
+  return r.json();
+};
+function toast(t){ const el=$('#toast'); el.textContent=t; el.classList.add('on');
+  setTimeout(()=>el.classList.remove('on'),2200); }
+const esc = s => String(s??'').replace(/[&<>"]/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;'}[c]));
+
+// ==================== 状态(收敛为一个点 + 异常横幅) ====================
+let health = {healthy:null, logged_in:null};
+let live = false;
+async function refreshStatus(){
+  try{ const s=await api('gw/status'); health=s.health||{}; health.offline=false; }
+  catch(e){ health={healthy:false, logged_in:null, offline:true}; }
+  renderStatus();
+}
+function renderStatus(){
+  let state='', banner='';
+  if(health.offline){ state='bad'; banner='网关服务未响应'; }
+  else if(!live){ state='warn'; banner='实时连接已断开，自动重连中…'; }
+  else if(health.logged_in===false){ state='bad'; banner='企业微信已掉线，暂时无法收发'; }
+  else if(health.healthy===true){ state='ok'; }
+  else if(health.healthy===false){ state='warn'; banner='企微服务未就绪，仅可查看历史消息'; }
+  const dot=$('#statusDot');
+  dot.className='sdot '+state;
+  dot.title=banner||(state==='ok'?'运行正常':'检测中…');
+  const bn=$('#statusBanner');
+  bn.className='banner '+(banner?(state==='bad'?'bad':'warn'):'');
+  bn.textContent=banner;
+}
+
+// ==================== 状态 ====================
+const PAGE = 50;               // 每页消息数(游标分页)
+let sessions = [];             // 会话列表
+let cur = null;                // 当前会话 {id,name,is_group}
+let msgs = [];                 // 当前会话已加载消息(按 seq 升序)
+let hasMore = false;           // 顶部是否还有更早历史
+let loadingOlder = false;
+let pending = [];              // 乐观发送队列 [{key,sid,content,time,state}]
+let pkey = 1;
+let newCount = 0;              // 不在底部时收到的新消息数
+
+const AVA=['#6c7ce0','#ef7a80','#3aae9f','#e8a23f','#8f7ce8','#42a7d6','#d97ab2','#68b263'];
+const avaColor=s=>AVA[[...String(s)].reduce((a,c)=>a+c.charCodeAt(0),0)%AVA.length];
+const initial=s=>String(s||'?').replace(/^R:/,'').slice(-2);
+const pad2=n=>String(n).padStart(2,'0');
+function waTime(ts){ if(!ts) return '';
+  const d=new Date(ts*1000), now=new Date();
+  if(d.toDateString()===now.toDateString()) return pad2(d.getHours())+':'+pad2(d.getMinutes());
+  return `${d.getMonth()+1}/${d.getDate()}`; }
+function fmtDivider(ts){
+  const d=new Date(ts*1000), now=new Date();
+  const hm=pad2(d.getHours())+':'+pad2(d.getMinutes());
+  const day0=new Date(now.getFullYear(),now.getMonth(),now.getDate());
+  const that=new Date(d.getFullYear(),d.getMonth(),d.getDate());
+  const dd=Math.round((day0-that)/864e5);
+  if(dd<=0) return hm;
+  if(dd===1) return '昨天 '+hm;
+  if(d.getFullYear()===now.getFullYear()) return `${d.getMonth()+1}月${d.getDate()}日 ${hm}`;
+  return `${d.getFullYear()}年${d.getMonth()+1}月${d.getDate()}日 ${hm}`;
+}
+const msgURL=q=>'gw/messages?'+new URLSearchParams({session:cur.id,...q});
+
+// ==================== 会话列表 ====================
+async function loadSessions(){
+  try{ const j=await api('gw/sessions'); sessions=j.list||[]; renderSessions(); }catch(e){}
+}
+function upsertSession(s){
+  const i=sessions.findIndex(x=>x.id===s.id);
+  if(i>=0) sessions[i]=s; else sessions.push(s);
+  sessions.sort((a,b)=>(b.last_time||0)-(a.last_time||0));
+}
+function renderSessions(){
+  const q=($('#waSearch').value||'').trim();
+  const list=sessions.filter(s=>!q||(s.name||'').includes(q)||(s.last_msg||'').includes(q));
+  const box=$('#waList');
+  const unread = sessions.reduce((a,s)=>a+(s.unread||0),0);
+  document.title = (unread?`(${unread}) `:'') + '会话消息 · 企业微信消息网关';
+  if(!list.length){
+    box.innerHTML='<div class="none"><svg><use href="#i-chat"/></svg><br>'+
+      (q?'没有匹配的会话':'还没有消息<br>收到企微消息后会自动出现')+'</div>';
+    return;
+  }
+  box.innerHTML=list.map(s=>{
+    const badge=s.unread>0?`<span class="wa-badge">${s.unread>99?'99+':s.unread}</span>`:'';
+    const grp=s.is_group?'<span class="gtag">群</span>':'';
+    return `<div class="wa-item ${cur&&cur.id===s.id?'on':''}" data-id="${esc(s.id)}">
+      <div class="wa-ava" style="background:${avaColor(s.id)}">${esc(initial(s.name||s.id))}</div>
+      <div class="mid">
+        <div class="r1"><span class="nm">${esc(s.name||s.id)}</span>${grp}<span class="tm">${waTime(s.last_time)}</span></div>
+        <div class="r2"><span class="pv">${esc(s.last_msg||'')}</span>${badge}</div>
+      </div></div>`;
+  }).join('');
+  box.querySelectorAll('.wa-item').forEach(el=> el.onclick=()=>{
+    const s=sessions.find(x=>x.id===el.dataset.id); if(s) openSession(s); });
+}
+
+// ==================== 打开会话 / 渲染消息 ====================
+async function openSession(s){
+  cur={id:s.id, name:s.name||s.id, is_group:!!s.is_group};
+  msgs=[]; hasMore=false; newCount=0; loadingOlder=false;
+  pending=pending.filter(p=>p.sid===cur.id);
+  $('#waTitle').textContent=cur.name;
+  $('#waTag').textContent=cur.is_group?'群聊':'私聊';
+  $('#waAva').style.background=avaColor(s.id);
+  $('#waAva').textContent=initial(s.name||s.id);
+  $('#waMainHd').classList.remove('hide');
+  $('#waInputBox').classList.remove('hide');
+  renderSessions();
+  $('#waMsgs').innerHTML='<div class="none">加载中…</div>';
+  try{
+    const j=await api(msgURL({limit:PAGE}));
+    msgs=j.list||[]; hasMore=!!j.has_more;
+  }catch(e){}
+  render(true);
+  markRead();
+  setTimeout(()=>$('#waText').focus(),50);
+}
+
+function isAtBottom(){
+  const b=$('#waMsgs');
+  return b.scrollHeight-b.scrollTop-b.clientHeight<80;
+}
+function needDivider(m,prev){
+  if(!m.time) return null;
+  if(!prev||!prev.time) return m.time;
+  const a=new Date(prev.time*1000), b=new Date(m.time*1000);
+  if(a.toDateString()!==b.toDateString()) return m.time;   // 跨天
+  if(m.time-prev.time>600) return m.time;                  // 间隔>10分钟
+  return null;
+}
+// ==================== 媒体渲染 ====================
+// 与后端 app.py 的 MS_* 常量一一对应
+const MS={PENDING:0,DOING:1,OK:2,FAIL:3,SKIP:4};
+function fmtSize(n){
+  n=+n||0;
+  if(n<1024) return n+' B';
+  if(n<1048576) return (n/1024).toFixed(0)+' KB';
+  if(n<1073741824) return (n/1048576).toFixed(1)+' MB';
+  return (n/1073741824).toFixed(2)+' GB';
+}
+const fileExt=n=>((String(n||'').split('.').pop()||'').slice(0,4)||'?');
+
+function imgHTML(d){
+  if(d.state===MS.OK)
+    return `<img class="wa-img" loading="lazy" src="media/${d.id}" data-img="${d.id}" alt="图片">`;
+  if(d.state===MS.FAIL)
+    return `<div class="wa-ph err" data-retry="${d.id}">图片下载失败<br>点击重试</div>`;
+  return `<div class="wa-ph"><div class="wa-spin"></div>图片加载中…</div>`;
+}
+function fileHTML(d,kind){
+  const label={file:'文件',video:'视频',voice:'语音'}[kind]||'文件';
+  let sub='',cls='',attr='',tag='div';
+  if(d.state===MS.OK){ sub=fmtSize(d.size); tag='a'; attr=`href="media/${d.id}?dl=1" download`; }
+  else if(d.state===MS.DOING){ sub='下载中…'; cls='act'; }
+  else if(d.state===MS.PENDING){ sub='等待下载…'; cls='act'; }
+  else if(d.state===MS.FAIL){ sub='下载失败 · 点击重试'; cls='err'; attr=`data-retry="${d.id}"`; }
+  // MS.SKIP：超过自动下载阈值(默认 50MB)，消息可见但还没下 —— 点击才拉
+  else { sub=(d.size?fmtSize(d.size)+' · ':'')+'点击下载'; cls='act'; attr=`data-retry="${d.id}"`; }
+  return `<${tag} class="wa-file" ${attr}>
+    <div class="wa-fico${d.state===MS.SKIP?' big':''}">${esc(fileExt(d.file_name))}</div>
+    <div class="wa-fmid"><div class="wa-fnm">${esc(d.file_name||label)}</div>
+      <div class="wa-fsz ${cls}">${esc(sub)}</div></div></${tag}>`;
+}
+function mediaHTML(m){
+  // 图文：一条消息带正文 + 多张图，整体一个卡片
+  if(m.msg_type===123){
+    const list=m.media_list||(m.media?[m.media]:[]);
+    return `<div class="wa-imgtext">`
+      +(m.content?`<div class="tx">${esc(m.content)}</div>`:'')
+      +(list.length?`<div class="wa-grid">${list.map(imgHTML).join('')}</div>`:'')
+      +`</div>`;
+  }
+  const d=m.media; if(!d) return esc(m.content||'');
+  return (d.kind==='image'||d.kind==='gif') ? imgHTML(d) : fileHTML(d,d.kind);
+}
+
+// ==================== 富文本卡片(链接/位置/名片/小程序/视频号) ====================
+// msg_type 用的是企微旗舰版 content_type，和 app.py 的 CT_* 一一对应
+const CT={TEXT:2,IMAGE:101,FILE:102,VIDEO:103,GIF:29,VOICE:16,LINK:13,
+          LOCATION:6,CARD:41,MINIAPP:78,REDPACKET:26,IMGTEXT:123,
+          CHANNELS:141,CHANNELS_LIVE:146};
+// 只放行 http/https —— 链接来自外部消息，不挡住的话 javascript: 就是个 XSS 入口
+const safeURL=u=>{const s=String(u||'').trim();return /^https?:\/\//i.test(s)?s:'';};
+const hostOf=u=>{try{return new URL(u).host;}catch(_){return '';}};
+
+function richHTML(m){
+  const r=m.rich||{}, ct=m.msg_type;
+  const label=String(m.content||'').replace(/^\[[^\]]*\]\s*/,'');   // 去掉 "[链接] " 前缀
+  const foot=(k,v)=>`<div class="rf"><span class="k">${k}</span>${
+    v?`<span class="v">${esc(v)}</span>`:''}</div>`;
+  if(ct===CT.LINK){
+    const u=safeURL(r.url);
+    const inner=`<div class="rt">${esc(r.title||label||'链接')}</div>`
+      +(r.desc?`<div class="rd">${esc(r.desc)}</div>`:'')
+      +foot('链接',hostOf(u)||r.url||'');
+    return u
+      ?`<a class="wa-rich" href="${esc(u)}" target="_blank" rel="noopener noreferrer">${inner}</a>`
+      :`<div class="wa-rich">${inner}</div>`;
+  }
+  if(ct===CT.LOCATION)
+    return `<div class="wa-rich"><div class="rt">${esc(r.title||label||'位置')}</div>`
+      +(r.address?`<div class="rd">${esc(r.address)}</div>`:'')
+      +foot('位置',(r.latitude&&r.longitude)?`${r.latitude}, ${r.longitude}`:'')+`</div>`;
+  if(ct===CT.CARD)
+    return `<div class="wa-rich"><div class="rt">${esc(r.nickname||label||'名片')}</div>`
+      +foot('名片',r.source||r.user_id||'')+`</div>`;
+  if(ct===CT.MINIAPP)
+    return `<div class="wa-rich"><div class="rt">${esc(r.title||label||'小程序')}</div>`
+      +foot('小程序',r.appname||'')+`</div>`;
+  if(ct===CT.CHANNELS||ct===CT.CHANNELS_LIVE)
+    return `<div class="wa-rich"><div class="rt">${esc(r.desc||label||'视频号')}</div>`
+      +foot(ct===CT.CHANNELS_LIVE?'视频号直播':'视频号','')+`</div>`;
+  return '';        // 红包/图文等没有可点内容，保持纯文字占位
+}
+
+function bubbleHTML(m,prev){
+  let html='';
+  const dv=needDivider(m,prev);
+  if(dv) html+=`<div class="wa-tdiv">${fmtDivider(dv)}</div>`;
+  const me=!!m.is_self;
+  // 已撤回：原消息仍留在库里，界面只显示一行系统提示
+  if(m.revoked)
+    return html+`<div class="wa-revoked">${
+      esc(me?'你':(m.sender_name||m.sender||'对方'))}撤回了一条消息</div>`;
+  // 同一发送者 3 分钟内的连续消息合为一组：隐藏头像和昵称
+  const grp=prev&&!dv&&!prev.key&&!prev.revoked&&prev.sender===m.sender&&
+            !!prev.is_self===me&&(m.time-prev.time<180);
+  const who=(cur.is_group&&!me&&!grp)
+    ?`<div class="wa-who">${esc(m.sender_name||m.sender)}</div>`:'';
+  const rich=m.rich?richHTML(m):'';
+  const body=m.media
+    ? `<div class="wa-bubble media" data-mkey="${m.media.id}">${mediaHTML(m)}</div>`
+    : rich ? `<div class="wa-bubble media">${rich}</div>`
+    : `<div class="wa-bubble">${esc(m.content)}</div>`;
+  html+=`<div class="wa-row ${me?'me':''} ${grp?'grp':''}">
+    <div class="a" style="background:${avaColor(me?'me':(m.sender||m.sender_name))}">${esc(me?'我':initial(m.sender_name||m.sender))}</div>
+    <div class="col">${who}${body}</div></div>`;
+  return html;
+}
+function pendingHTML(p,prev){
+  let html='';
+  const dv=needDivider(p,prev);
+  if(dv) html+=`<div class="wa-tdiv">${fmtDivider(dv)}</div>`;
+  const grp=prev&&!dv&&(prev.key||prev.is_self)&&(p.time-(prev.time||0)<180);
+  const cls=(p.state==='failed'?'failed':(p.state==='sending'?'pending':''))+(grp?' grp':'');
+  const hint=p.state==='failed'?'<div class="wa-fail-hint">发送失败 · 点击气泡重试</div>':'';
+  html+=`<div class="wa-row me ${cls}" data-pkey="${p.key}">
+    <div class="a" style="background:${avaColor('me')}">我</div>
+    <div class="col"><div class="wa-bubble">${esc(p.content)}</div>${hint}</div></div>`;
+  return html;
+}
+function render(toBottom){
+  if(!cur) return;
+  const box=$('#waMsgs');
+  const myPending=pending.filter(p=>p.sid===cur.id);
+  if(!msgs.length&&!myPending.length){
+    box.innerHTML='<div class="none">暂无消息</div>'; updateNewPill(); return;
+  }
+  let html = hasMore
+    ? '<div class="wa-more" id="waMore">'+(loadingOlder?'加载中…':'查看更早消息')+'</div>'
+    : (msgs.length>=PAGE?'<div class="wa-more dim">没有更早的消息了</div>':'');
+  let prev=null;
+  msgs.forEach(m=>{ html+=bubbleHTML(m,prev); prev=m; });
+  myPending.forEach(p=>{ html+=pendingHTML(p,prev); prev=p; });
+  const keepTop=box.scrollTop;
+  box.innerHTML=html;
+  box.scrollTop = toBottom ? box.scrollHeight : keepTop;
+  updateNewPill();
+}
+
+// ---- 向上翻历史(游标 before, 保持滚动位置不跳) ----
+async function loadOlder(){
+  if(!cur||loadingOlder||!hasMore||!msgs.length) return;
+  loadingOlder=true;
+  const more=$('#waMore'); if(more) more.textContent='加载中…';
+  const box=$('#waMsgs');
+  try{
+    const j=await api(msgURL({limit:PAGE, before:msgs[0].seq}));
+    hasMore=!!j.has_more;
+    const ph=box.scrollHeight, pt=box.scrollTop;
+    msgs=(j.list||[]).concat(msgs);
+    render(false);
+    box.scrollTop = pt + (box.scrollHeight - ph);   // 锚定：老位置不动
+  }catch(e){}
+  loadingOlder=false;
+}
+$('#waMsgs').addEventListener('scroll',()=>{
+  const b=$('#waMsgs');
+  if(b.scrollTop<50) loadOlder();
+  if(isAtBottom()&&newCount){ newCount=0; updateNewPill(); }
+});
+$('#waMsgs').addEventListener('click',e=>{
+  if(e.target.id==='waMore'){ loadOlder(); return; }
+  // 图片点击 -> 大图预览
+  const img=e.target.closest('[data-img]');
+  if(img){ openLightbox(img.dataset.img); return; }
+  // 未下载/失败的媒体 -> 触发按需下载(<a> 已就绪的走原生下载，不会进这里)
+  const rt=e.target.closest('[data-retry]');
+  if(rt){ fetchMedia(rt.dataset.retry); return; }
+  const row=e.target.closest('.wa-row.failed');
+  if(row){ const p=pending.find(x=>x.key===row.dataset.pkey); if(p) doSend(p); }
+});
+
+// ---- 按需下载：立刻返回，真正就绪等 SSE 的 media 事件 ----
+// 按媒体 id 找到所属消息。图文一条消息挂多张图，每张有独立 id，
+// 不能只比 media_id(那只是第一张的)
+function msgOfMedia(id){
+  return msgs.find(x=>
+    (x.media&&x.media.id===id) || (x.media_list||[]).some(y=>y.id===id));
+}
+// 把消息里那一条媒体替换成新状态
+function setMediaState(m,d){
+  if(m.media_list){
+    const i=m.media_list.findIndex(y=>y.id===d.id);
+    if(i>=0) m.media_list[i]=d;
+  }
+  if(m.media&&m.media.id===d.id) m.media=d;
+}
+async function fetchMedia(id){
+  const m=msgOfMedia(id);
+  if(m){ const cur=(m.media_list||[m.media]).find(y=>y&&y.id===id);
+    if(cur){ setMediaState(m,{...cur,state:MS.PENDING}); patchMedia(m); } }
+  try{ const j=await api('gw/media-fetch',{id});
+    if(!j.ok) toast('下载失败：'+(j.error||'未知错误')); }
+  catch(e){ toast('下载失败：网关无响应'); }
+}
+// 局部替换单个媒体气泡，避免整屏重渲染把滚动位置和图片闪掉。
+// data-mkey 用的是第一条媒体的 id，多图时整块一起重画。
+function patchMedia(m){
+  if(!m.media) return render(false);
+  const el=$('#waMsgs').querySelector(`[data-mkey="${m.media.id}"]`);
+  if(el) el.innerHTML=mediaHTML(m); else render(false);
+}
+function onMedia(ev){
+  const d=ev.media; if(!d) return;
+  const m=msgOfMedia(d.id);
+  if(!m) return;
+  setMediaState(m,d);
+  patchMedia(m);
+}
+
+// ==================== 原始推送抽屉(调试) ====================
+// 纯前端展示：只读 /gw/raw-pushes + 监听 SSE，既不入库也不触发工作流。
+// 后端接口和管理后台那页完全复用，这里不做任何新增存储。
+let RD=[], RD_OPEN=new Set(), RD_ON=false, RD_SEQ=0;
+const RD_CAP=300;                       // 前端只留最近 300 条，长期开着也不涨内存
+
+const rdTime=t=>{const d=new Date((t||0)*1000);
+  return [d.getHours(),d.getMinutes(),d.getSeconds()]
+    .map(n=>String(n).padStart(2,'0')).join(':');};
+// 用正则而不是 JSON.parse：超大 payload 会被后端截断，截断后 parse 会失败。
+// 群事件(11072/11074/11078 等)用的是 room_conversation_id，一并认，否则按会话筛会漏掉它们。
+const rdSid=it=>{
+  const m=/"(?:room_)?conversation_id":\s*"([^"]*)"/.exec(it.raw||'');
+  return m?m[1]:'';};
+
+function rdItemHTML(it){
+  const open=RD_OPEN.has(it.seq);
+  return `<div class="rd-it ${open?'open':''}" data-seq="${it.seq}">
+    <div class="h">
+      <span class="tm">${rdTime(it.t)}</span>
+      <span class="tp">${it.type}</span>
+      <span class="nm">${esc(it.name)}</span>
+      <span class="tag ${it.handled?'ok':'no'}">${it.handled?'已接管':'未接管'}</span>
+    </div>
+    <div class="bd"><button class="cp" data-copy="${it.seq}">复制</button>${esc(it.raw)}</div>
+  </div>`;
+}
+function renderRD(){
+  const onlyCur=$('#rdOnlyCur').checked;
+  let list=RD;
+  if(onlyCur&&cur) list=RD.filter(it=>rdSid(it)===cur.id);
+  $('#rdCnt').textContent=RD.length?`${list.length}${onlyCur?' / '+RD.length:''} 条`:'';
+  const box=$('#rdBody');
+  if(!RD_ON){
+    box.innerHTML=`<div class="rd-off">原始推送抓取当前是<b>关闭</b>的。<br>
+      打开后，企微 DLL 的每一条回调都会实时出现在这里，用于排查消息结构。<br>
+      <button id="rdTurnOn">开启抓取</button></div>`;
+    $('#rdTurnOn').onclick=async()=>{
+      await api('gw/config',{debug:{raw_push:true}});
+      RD_ON=true; toast('已开启，新推送会实时出现'); loadRD();
+    };
+    return;
+  }
+  if(!list.length){
+    box.innerHTML=`<div class="rd-empty">${onlyCur&&cur?'这个会话还没有推送':'还没有收到推送'}
+      <br>企微来消息时会实时出现</div>`;
+    return;
+  }
+  box.innerHTML=list.slice().reverse().map(rdItemHTML).join('');   // 最新在上
+}
+async function loadRD(){
+  try{
+    const j=await api('gw/raw-pushes');
+    RD_ON=!!j.on; RD=j.list||[];
+    if(RD.length) RD_SEQ=RD[RD.length-1].seq;
+    renderRD();
+  }catch(e){}
+}
+// SSE 实时推入(后端 _capture_raw 里 publish 的)
+function onRawPush(it){
+  if(!it) return;
+  RD_ON=true;
+  if(RD.some(x=>x.seq===it.seq)) return;
+  RD.push(it); RD_SEQ=it.seq;
+  if(RD.length>RD_CAP) RD=RD.slice(-RD_CAP);
+  if($('#rawDrawer').classList.contains('on')){
+    const box=$('#rdBody'), atTop=box.scrollTop<40;
+    renderRD();
+    if(atTop) box.scrollTop=0;          // 停在顶部时跟随最新
+  }else{
+    $('#rawBtnDot').classList.remove('hide');
+  }
+}
+$('#rawBtn').onclick=()=>{
+  const on=$('#rawDrawer').classList.toggle('on');
+  $('#rawBtn').classList.toggle('on',on);
+  if(on){ $('#rawBtnDot').classList.add('hide'); loadRD(); }
+};
+$('#rdClose').onclick=()=>{
+  $('#rawDrawer').classList.remove('on');
+  $('#rawBtn').classList.remove('on');
+};
+$('#rdOnlyCur').onchange=renderRD;
+$('#rdBody').addEventListener('click',e=>{
+  const cp=e.target.closest('[data-copy]');
+  if(cp){
+    e.stopPropagation();
+    const it=RD.find(x=>x.seq==cp.dataset.copy);
+    if(it) navigator.clipboard.writeText(it.raw).then(
+      ()=>toast('已复制原文'),()=>toast('复制失败，请手动选中'));
+    return;
+  }
+  const box=e.target.closest('.rd-it');
+  if(!box) return;
+  const seq=+box.dataset.seq;
+  if(RD_OPEN.has(seq)) RD_OPEN.delete(seq); else RD_OPEN.add(seq);
+  box.classList.toggle('open');
+});
+
+// ---- 大图预览 ----
+function openLightbox(id){
+  $('#waLbImg').src='media/'+id;
+  $('#waLbDl').href='media/'+id+'?dl=1';
+  $('#waLightbox').classList.add('on');
+}
+$('#waLightbox').onclick=e=>{
+  if(e.target.id==='waLbDl') return;          // 点下载按钮不关闭
+  $('#waLightbox').classList.remove('on');
+  $('#waLbImg').src='';
+};
+window.addEventListener('keydown',e=>{
+  if(e.key==='Escape') $('#waLightbox').classList.remove('on');
+});
+
+// ---- 新消息浮标 ----
+function updateNewPill(){
+  const el=$('#newPill');
+  if(newCount>0&&cur){ el.textContent=`↓ ${newCount} 条新消息`; el.classList.add('on'); }
+  else el.classList.remove('on');
+}
+$('#newPill').onclick=()=>{
+  const b=$('#waMsgs'); b.scrollTop=b.scrollHeight;
+  newCount=0; updateNewPill(); markRead();
+};
+
+// ---- 未读(显式 mark-read) ----
+function markRead(){
+  if(!cur) return;
+  const s=sessions.find(x=>x.id===cur.id);
+  if(s&&s.unread){ s.unread=0; renderSessions(); }
+  api('gw/read',{session:cur.id}).catch(()=>{});
+}
+window.addEventListener('focus',()=>{ if(cur) markRead(); });
+
+// ==================== 发送(乐观上屏 + 回声替换) ====================
+async function waSend(){
+  const t=$('#waText').value.trim();
+  if(!t||!cur) return;
+  $('#waText').value='';
+  const p={key:'p'+(pkey++), sid:cur.id, content:t,
+           time:Math.floor(Date.now()/1000), state:'sending'};
+  pending.push(p);
+  render(true);
+  doSend(p);
+}
+async function doSend(p){
+  p.state='sending'; render(isAtBottom());
+  let j; try{ j=await api('gw/send',{session:p.sid,text:p.content}); }
+  catch(e){ j={ok:false}; }
+  if(!j.ok){ p.state='failed'; toast('发送失败：'+(j.error||'检查企微登录状态')); }
+  else p.state='sent';     // 等 SSE 回声到达后替换成正式消息
+  render(isAtBottom());
+}
+$('#waSend').onclick=waSend;
+$('#waText').onkeydown=e=>{ if(e.key==='Enter'&&!e.shiftKey){ e.preventDefault(); waSend(); } };
+
+// ==================== SSE 实时通道 ====================
+function connectSSE(){
+  const es=new EventSource('gw/events');
+  es.onopen=()=>{ live=true; renderStatus(); resync(); };
+  es.onerror=()=>{ live=false; renderStatus(); };  // EventSource 会自动按 retry 重连
+  es.onmessage=e=>{
+    let ev; try{ ev=JSON.parse(e.data); }catch(_){ return; }
+    if(ev.type==='message') onLive(ev);
+    else if(ev.type==='media') onMedia(ev);
+    else if(ev.type==='revoke') onRevoke(ev);
+    else if(ev.type==='raw_push') onRawPush(ev.item);
+    else if(ev.type==='read'){
+      const s=sessions.find(x=>x.id===ev.session_id);
+      if(s&&s.unread){ s.unread=0; renderSessions(); }
+    }
+    else if(ev.type==='sessions_changed') loadSessions();
+  };
+}
+// 断线重连后补差：会话列表全刷 + 当前会话用 after=<最后seq> 拉漏掉的消息
+async function resync(){
+  await loadSessions();
+  if(!cur) return;
+  if(!msgs.length){
+    try{ const j=await api(msgURL({limit:PAGE}));
+      msgs=j.list||[]; hasMore=!!j.has_more; render(true); }catch(e){}
+    return;
+  }
+  try{
+    const j=await api(msgURL({after:msgs[msgs.length-1].seq, limit:200}));
+    const fresh=(j.list||[]).filter(m=>!msgs.some(x=>x.seq===m.seq));
+    if(fresh.length){
+      const atB=isAtBottom();
+      msgs=msgs.concat(fresh);
+      render(atB);
+      if(!atB){ newCount+=fresh.length; updateNewPill(); }
+    }
+  }catch(e){}
+}
+function onLive(ev){
+  if(ev.session) upsertSession(ev.session);
+  renderSessions();
+  if(!cur||cur.id!==ev.session_id) return;
+  const m=ev.message;
+  if(!m||msgs.some(x=>x.seq===m.seq)) return;      // 按 seq 去重
+  if(m.is_self){                                    // 回声替换乐观气泡
+    const i=pending.findIndex(p=>p.sid===cur.id&&p.content===m.content);
+    if(i>=0) pending.splice(i,1);
+  }
+  const atB=isAtBottom();
+  msgs.push(m);
+  render(atB);
+  if(!atB&&!m.is_self){ newCount++; updateNewPill(); }
+  if(!m.is_self&&document.hasFocus()) markRead();
+}
+
+// 撤回：把库里已标记的那条替换掉，原地重渲染(不动滚动位置)
+function onRevoke(ev){
+  if(ev.session) upsertSession(ev.session);
+  renderSessions();
+  const m=ev.message;
+  if(!m||!cur||cur.id!==ev.session_id) return;
+  const i=msgs.findIndex(x=>x.seq===m.seq);
+  if(i<0) return;
+  msgs[i]=m;
+  render(false);
+}
+
+// ==================== 其它 ====================
+$('#waSearch').oninput=renderSessions;
+$('#waSync').onclick=async()=>{
+  const btn=$('#waSync');
+  btn.classList.add('spin'); btn.disabled=true;
+  try{ const j=await api('gw/sync-contacts',{});
+    if(j.error && !(j.groups||j.friends)) toast('同步失败：'+j.error);
+    else toast(`已同步 群 ${j.groups||0} · 好友 ${j.friends||0}`+(j.error?'（部分受限）':'')); }
+  catch(e){ toast('同步失败：企微服务未就绪'); }
+  btn.classList.remove('spin'); btn.disabled=false;
+  loadSessions();
+};
+
+// ==================== 启动 ====================
+(function(){
+  refreshStatus(); loadSessions(); connectSSE();
+  setInterval(refreshStatus, 5000);
+  setInterval(loadSessions, 30000);   // 兜底低频刷新(SSE 异常时列表仍可用)
+})();
+</script>
+</body>
+</html>

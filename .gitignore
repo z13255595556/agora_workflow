@@ -1,0 +1,33 @@
+# 运行时配置。含 company_id 白名单等环境相关的值，绝不入库。
+# 模板见 config.example.json
+config.json
+rules.json
+workflows.json
+
+# 消息数据库(运行时生成)
+gateway.db
+gateway.db-wal
+gateway.db-shm
+
+# 媒体附件(运行时下载的图片/文件，含聊天内容，体积大，绝不入库)
+media/
+
+# 日志
+*.log
+
+# Python 缓存
+__pycache__/
+*.pyc
+*.pyo
+
+# 打包产物
+*.zip
+
+# 本机工具配置(各人各机不同，不入库)
+.claude/
+.vscode/
+.idea/
+
+# 系统
+.DS_Store
+Thumbs.db
