@@ -73,13 +73,17 @@ DEFAULT_CONFIG = {
     },
     "media": {
         "enabled": True,
-        "dir": "media",                   # 媒体落盘目录, 相对路径按本目录解析
+        # link     = 不下载, /media/<id> 302 跳到语聚给的原始 URL(默认)
+        # download = 下载归档到本地。语聚给的是公开 S3 对象、不带签名也不过期,
+        #            所以 link 足够用; 只有"对方可能删文件、你要留证"时才需要 download
+        "mode": "link",
+        "dir": "media",                   # 落盘目录(仅 download 模式), 相对路径按本目录解析
         "image_auto": True,               # 图片自动下载并在会话里内联展示
         "auto_download_mb": 50,           # ≤此大小的自动下载; 超过的只存元信息, 点击再下
         "video_auto": False,              # 视频体积大, 默认不自动下
         "voice_auto": False,
-        # 媒体保留天数, 0=不清理。按消息时间算, 精确到秒(3=72小时)。
-        # ⚠️ 语聚给的媒体 URL 本身也会过期, 超期后原图就再也拉不回来了。
+        # 媒体保留天数, 0=不清理。**仅 download 模式生效** ——
+        # link 模式下没有本地文件可回收, 删记录只会把链接弄丢。
         "keep_days": 3,
         "workers": 2,                     # 下载线程数。直连 HTTP, 可以比 DLL 时代开大点
         "max_tries": 3
@@ -171,7 +175,10 @@ HEALTH = {
 JJY_Q       = queue.Queue()
 SEEN_EVENTS = deque(maxlen=4000)
 SEEN_SET    = set()                    # 与 SEEN_EVENTS 同步, 用于 O(1) 判重
-JJY_STATS   = {"received": 0, "dup": 0, "rejected": 0, "bad": 0, "last_at": 0}
+JJY_STATS   = {"received": 0, "dup": 0, "rejected": 0,
+               "ignored": 0,          # 非 ai_assistant_receives_msg 的事件(如 chat_finish)
+               "bad": 0,              # 是本事件但缺关键字段, 解析不出来
+               "last_at": 0}
 
 # 原始推送调试缓冲(只在内存, 不落库)。默认关, 见 config.debug.raw_push
 RAW_PUSHES  = deque(maxlen=1000)
@@ -414,8 +421,11 @@ def _guess_mime(name, kind):
     return {"image": "image/jpeg", "gif": "image/gif", "video": "video/mp4",
             "voice": "audio/amr"}.get(kind, "application/octet-stream")
 
-def _auto_plan(kind, size):
-    """按配置决定这条媒体是立刻下载(MS_PENDING)还是先只存元信息(MS_SKIP)。
+def _auto_plan(kind, size, md=None):
+    """按配置决定这条媒体的初始状态。
+
+    link 模式：直接置 MS_OK —— 不下载，取用时由 /media/<id> 302 到原始 URL。
+    前端因此一行都不用改：<img src="media/xxx"> 照样出图。
 
     文件的阈值是 auto_download_mb(默认 50MB)：超过的不自动下，但消息照常入库、
     会话里能看到文件卡片，点击时再按需下载。
@@ -423,6 +433,9 @@ def _auto_plan(kind, size):
     c = _mcfg()
     if not c.get("enabled", True):
         return MS_SKIP
+    # link 模式：只要拿得到直连 url 就当已就绪
+    if c.get("mode", "link") == "link" and ((md or {}).get("cdn") or {}).get("url"):
+        return MS_OK
     if kind in ("image", "gif"):
         return MS_PENDING if c.get("image_auto", True) else MS_SKIP
     if kind == "video":
@@ -442,7 +455,7 @@ def _register_media(mid, seq, sid, md, ts):
     kind = md.get("kind") or "file"
     name = md.get("file_name") or "file"
     size = int(md.get("size") or 0)
-    state = _auto_plan(kind, size)
+    state = _auto_plan(kind, size, md)
     STORE.add_media(mid=mid, msg_seq=seq, session_id=sid, kind=kind,
                     file_name=name, size=size, md5=md.get("md5") or "",
                     mime=_guess_mime(name, kind),
@@ -451,6 +464,8 @@ def _register_media(mid, seq, sid, md, ts):
                     state=state, ts=ts)
     if state == MS_PENDING:
         MEDIA_Q.put(mid)
+    elif state == MS_OK:
+        pass                       # link 模式：无需下载，取用时再 302
     else:
         log.info("媒体未自动下载(超阈值或按配置跳过) kind=%s size=%.1fMB name=%s",
                  kind, size / 1048576.0, name)
@@ -541,7 +556,12 @@ def media_gc():
     while True:
         time.sleep(3600)
         try:
-            keep = int(_mcfg().get("keep_days") or 0)
+            c = _mcfg()
+            keep = int(c.get("keep_days") or 0)
+            # link 模式下本地根本没有文件, 按天数删记录只会把链接弄丢、还回收不了任何磁盘。
+            # 传 0 让 orphan_media 只清"消息已被裁剪掉的孤儿", 不做时间过期。
+            if c.get("mode", "link") == "link":
+                keep = 0
             rows = STORE.orphan_media(keep)
             if not rows:
                 continue
@@ -720,8 +740,11 @@ def jjy_worker():
             cfg = CONFIG.get("jjy") or {}
             msg = jjy.normalize(body, bot_name=cfg.get("bot_name") or "")
             if not msg:
+                # 语聚除了消息推送还会发别的事件(实测有 chat_finish=对话结束)，
+                # 那不是解析失败, 单独计数, 免得看着像在丢消息
+                ev = body.get("event_type") or ""
                 with _lock:
-                    JJY_STATS["bad"] += 1
+                    JJY_STATS["ignored" if ev != "ai_assistant_receives_msg" else "bad"] += 1
                 continue
             # 会话显示名：DLL 那套通讯录接口没了，只能从每条推送里攒 chat_title。
             # 群聊 store_message 查的是 NAME_MAP[sid]，私聊查的是 _private_peer_id(sid)
@@ -802,9 +825,24 @@ class Handler(BaseHTTPRequestHandler):
         m = STORE.get_media(mid) if STORE else None
         if not m:
             return self._send_json({"error": "not found"}, 404)
-        if m["state"] != MS_OK or not m["path"]:
+        if m["state"] != MS_OK:
             # 还没下载好：回状态让前端显示进度/触发按需下载，而不是给个死链
             return self._send_json({"state": m["state"], "err": m["err"],
+                                    "file_name": m["file_name"],
+                                    "size": m["size"], "kind": m["kind"]}, 409)
+        if not m["path"]:
+            # link 模式：本地没有文件，302 到语聚给的原始 URL。
+            # 用 302(临时)而非 301 —— 将来若改成 download 模式，同一个 /media/<id>
+            # 要能改回吐本地文件；301 会被浏览器永久缓存，改不回来。
+            url = (STORE.get_media_cdn(mid) or {}).get("url") or ""
+            if url.startswith(("http://", "https://")):
+                self.send_response(302)
+                self.send_header("Location", url)
+                self.send_header("Referrer-Policy", "no-referrer")   # 别把本站地址带给第三方
+                self.send_header("Cache-Control", "private, max-age=300")
+                self.end_headers()
+                return
+            return self._send_json({"state": m["state"], "err": "无本地文件也无直连 url",
                                     "file_name": m["file_name"],
                                     "size": m["size"], "kind": m["kind"]}, 409)
         rp = os.path.realpath(m["path"])

@@ -16,6 +16,7 @@
   },
   "media": {
     "enabled": true,
+    "mode": "link",
     "dir": "media",
     "image_auto": true,
     "auto_download_mb": 50,

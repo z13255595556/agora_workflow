@@ -29,7 +29,9 @@ jjy.py — 语聚AI(集简云)聚合对话 webhook 报文 -> 内部归一化消�
 将来要调语聚的发消息接口，`raw_chat_id()` 把前缀剥掉就是它认的 chat_id。
 """
 
+import json
 import time
+from urllib.parse import unquote
 
 # ---- 内部 content_type，取值必须和 app.py 的 CT_* 保持一致 ----
 MSG_TEXT = 2
@@ -47,6 +49,7 @@ JJY_TYPE = {
     5:  (CT_LOCATION, None),
     6:  (CT_VIDEO,    "video"),
     7:  (CT_LINK,     None),   # 卡片/链接
+    8:  (CT_FILE,     "file"),  # ⚠️ 官方文档的枚举里没有 8，实测就是文件消息
     9:  (CT_IMAGE,    "image"),
     10: (MSG_TEXT,    None),   # 抖音进线
     11: (MSG_TEXT,    None),   # 广告留资
@@ -56,6 +59,42 @@ JJY_TYPE = {
 # 富文本要留档的字段，对齐 app.py 的 RICH_FIELDS
 RICH_KEYS = ("title", "cover", "link", "url", "address", "name",
              "latitude", "longitude", "avatar", "nickname", "text")
+
+
+def _unwrap(mtype, mc):
+    """type 8/12 的 message_content.text 是**一段 JSON 字符串**，要再解一层。
+
+        8  -> {"fileUrl": "...", "name": "xx.log", "size": 1036562}
+        12 -> {"chatHistoryList": [...], "title": "A和B的聊天记录"}
+
+    这两条都不在官方文档里(8 号连枚举都没有)，是从真实推送里扒出来的。
+    解析失败就原样返回，退化成纯文本展示，不会丢消息。
+    """
+    if mtype not in (8, 12) or not isinstance(mc, dict):
+        return mc
+    t = mc.get("text")
+    if not isinstance(t, str) or not t.lstrip().startswith("{"):
+        return mc
+    try:
+        inner = json.loads(t)
+    except Exception:
+        return mc
+    return dict(mc, **inner) if isinstance(inner, dict) else mc
+
+
+def _history_text(mc):
+    """合并转发的聊天记录 -> 多行可读文本。"""
+    lst = mc.get("chatHistoryList") or []
+    head = "[聊天记录] " + (mc.get("title") or "")
+    lines = []
+    for it in lst[:50]:                      # 只展开前 50 条，避免一条消息撑爆气泡
+        who = it.get("senderName") or ""
+        corp = it.get("corpName") or ""
+        body = ((it.get("message") or {}).get("content") or "").replace("\n", " ")
+        lines.append("%s%s：%s" % (who, "(%s)" % corp if corp else "", body))
+    if len(lst) > 50:
+        lines.append("…… 共 %d 条" % len(lst))
+    return "\n".join([head.strip()] + lines)
 
 
 def _pick(data, key):
@@ -87,8 +126,12 @@ def _as_text(mtype, mc):
         return "[视频]"
     if mtype == 7:
         return "[卡片] %s" % (mc.get("title") or "")
+    if mtype == 8:
+        return "[文件] %s" % (mc.get("name") or "")
     if mtype == 9:
         return ""                                     # 图片正文留空，前端渲染媒体
+    if mtype == 12:
+        return _history_text(mc)
     if mtype == 11:
         # 广告留资：小红书/抖音两套结构都可能，捡关键字段拼一行
         bits = [mc.get(k) for k in ("advertiser_name", "campaign_name",
@@ -101,12 +144,18 @@ def _media_of(kind, mc):
     """语聚的媒体 URL -> app.py 媒体条目。全部走 direct 直连下载。"""
     url = {"image": mc.get("url"),
            "video": mc.get("video_url"),
-           "voice": mc.get("voice_url")}.get(kind) or ""
+           "voice": mc.get("voice_url"),
+           "file":  mc.get("fileUrl")}.get(kind) or ""
     if not url:
         return None
-    ext = {"image": "jpg", "video": "mp4", "voice": "mp3"}[kind]
-    # 文件名取 URL 末段，避免同会话多张图重名；带上 kind 前缀便于人工翻目录
-    tail = url.rsplit("/", 1)[-1].split("?")[0][:40] or ("x." + ext)
+    ext = {"image": "jpg", "video": "mp4", "voice": "mp3", "file": "bin"}[kind]
+    if kind == "file" and mc.get("name"):
+        return {"kind": kind, "file_name": mc["name"],
+                "size": int(mc.get("size") or 0), "md5": "",
+                "cdn_type": 0, "cdn": {"url": url, "direct": True}, "file_type": 5}
+    # 文件名取 URL 末段。必须 unquote —— S3 路径里的中文是百分号编码的，
+    # 不解码会得到 image_%E4%BC%81%E4%B8%9A... 这种没法看的名字。
+    tail = unquote(url.rsplit("/", 1)[-1].split("?")[0])[:60] or ("x." + ext)
     if "." not in tail:
         tail += "." + ext
     return {"kind": kind, "file_name": "%s_%s" % (kind, tail),
@@ -144,6 +193,7 @@ def normalize(body, bot_name=""):
     mc = msg.get("message_content")
     if not isinstance(mc, dict):
         mc = {"text": str(mc or "")}
+    mc = _unwrap(mtype, mc)          # type 8/12 的 text 里还套着一层 JSON
     content = _as_text(mtype, mc)
 
     # outgoing = 我方(人工客服/AI智能体)发出的，展示在右侧。
@@ -200,7 +250,10 @@ def normalize(body, bot_name=""):
         out["media"] = m
 
     rich = {k: mc[k] for k in RICH_KEYS if isinstance(mc, dict) and mc.get(k)}
-    if rich and mtype in (4, 5, 7, 11):
+    if mtype == 12 and mc.get("chatHistoryList"):
+        out["rich"] = {"title": mc.get("title") or "",
+                       "history": mc["chatHistoryList"][:50]}
+    elif rich and mtype in (4, 5, 7, 11):
         out["rich"] = rich
 
     return out
