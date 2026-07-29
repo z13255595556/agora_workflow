@@ -176,6 +176,26 @@ class Store:
                 " ORDER BY seq LIMIT ?", (session_id, int(limit))).fetchall()
         return [{"seq": r["seq"], "content": r["content"], "ts": r["ts"]} for r in rows]
 
+    def known_msg_ids(self, session_id, ids):
+        """给定一批 msg_id，返回其中**已经在库里**的。
+
+        回填时用来排除掉不该认领的候选：语聚自己的 AI 规则发的回复也是
+        outgoing，但那些是走 webhook 推进来的、早就带着真 id 入库了。
+        正文撞车时(「好的」「收到」这种)不排除就会认错，撤回撤到别人头上。
+        """
+        ids = [str(i) for i in ids if i]
+        if not ids:
+            return set()
+        out = set()
+        with self._lock:
+            for i in range(0, len(ids), 400):        # SQLite 变量数有上限
+                chunk = ids[i:i + 400]
+                rows = self._db.execute(
+                    "SELECT msg_id FROM messages WHERE session_id=? AND msg_id IN (%s)"
+                    % ",".join("?" * len(chunk)), [session_id] + chunk).fetchall()
+                out.update(r["msg_id"] for r in rows)
+        return out
+
     def set_msg_id(self, seq, msg_id):
         """给某条消息换 msg_id。真 id 已被别的行占用时不动(唯一索引会拦)。"""
         if not msg_id:

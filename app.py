@@ -553,37 +553,49 @@ def jjy_history(conversation_id):
 # 所以唯一的来源就是回查会话内容。没有真 id 就撤回不了、引用不了自己发的消息。
 BACKFILL_Q     = queue.Queue()
 BACKFILL_WAIT  = set()             # 已排队的会话，避免连发几条排一堆重复任务
-BACKFILL_DELAY = 4                 # 秒。刚发完立刻查，语聚那边可能还没落库
+# 重试节奏(秒)。只查一次是不够的：语聚落库有延迟，这一下正好网络抖也会落空，
+# 而那条消息就永久停在 local: 占位上，再没人管它。
+BACKFILL_STEPS = (4, 15, 60, 240)
 
-def schedule_backfill(session_id):
+def schedule_backfill(session_id, attempt=0):
+    key = (session_id, attempt)
     with _lock:
-        if session_id in BACKFILL_WAIT:
+        if key in BACKFILL_WAIT:
             return
-        BACKFILL_WAIT.add(session_id)
-    BACKFILL_Q.put(session_id)
+        BACKFILL_WAIT.add(key)
+    BACKFILL_Q.put(key)
 
 
 def backfill_worker():
     while True:
-        sid = BACKFILL_Q.get()
+        sid, attempt = BACKFILL_Q.get()
         try:
-            time.sleep(BACKFILL_DELAY)
+            time.sleep(BACKFILL_STEPS[min(attempt, len(BACKFILL_STEPS) - 1)])
             with _lock:
-                BACKFILL_WAIT.discard(sid)      # 放在查之前：这期间再发的会重新排队
+                BACKFILL_WAIT.discard((sid, attempt))   # 放在查之前, 期间再发的会重新排队
             pend = STORE.local_msgs(sid) if STORE else []
             if not pend:
                 continue
             hist, err = jjy_history(sid)
             if err:
                 log.warning("回查会话内容失败 %s: %s", sid, err)
+                _retry_backfill(sid, attempt)
                 continue
             # 语聚返回的是新的在前，翻过来和本地(旧的在前)同序，好按顺序配对
             outs = [m for m in reversed(hist)
                     if m.get("message_forward_type") == "outgoing"]
+            # 已经在库里的 id 一律排除 —— 那是语聚自己的 AI 规则发的回复(走
+            # webhook 推进来的, 一来就带真 id)。正文撞车时不排除会认错人，
+            # 然后你点撤回撤掉的是它那条。
+            known = STORE.known_msg_ids(
+                sid, [m.get("message_id") for m in outs])
             used, fixed = set(), set()
             for p in pend:
                 for i, m in enumerate(outs):
                     if i in used:
+                        continue
+                    mid = str(m.get("message_id") or "")
+                    if not mid or mid in known:
                         continue
                     mc = m.get("message_content")
                     txt = mc.get("text") if isinstance(mc, dict) else ""
@@ -591,8 +603,7 @@ def backfill_worker():
                     # 同一句话连发两遍时按先后顺序一一对应(used 保证不重复认领)。
                     if str(txt or "") != p["content"]:
                         continue
-                    mid = str(m.get("message_id") or "")
-                    if mid and STORE.set_msg_id(p["seq"], mid):
+                    if STORE.set_msg_id(p["seq"], mid):
                         used.add(i)
                         fixed.add(p["seq"])
                     break
@@ -603,10 +614,25 @@ def backfill_worker():
                     if m["seq"] in fixed:
                         BUS.publish({"type": "msg_update",
                                      "session_id": sid, "message": m})
+            if len(fixed) < len(pend):          # 还有没认领上的, 过一会儿再试
+                _retry_backfill(sid, attempt)
         except Exception as e:
             log.warning("回填 message_id 异常 %s: %s", sid, e)
         finally:
             BACKFILL_Q.task_done()
+
+
+def _retry_backfill(sid, attempt):
+    """重试到 BACKFILL_STEPS 用完为止(约 5 分钟)。
+
+    再查不到就认了：那多半是正文被语聚改过、或者这条压根没进它的会话记录，
+    继续轮询只是白烧接口配额 —— 而那接口一次吐回整段对话，不便宜。
+    消息本身还在库里，只是没有撤回/引用按钮。
+    """
+    if attempt + 1 < len(BACKFILL_STEPS):
+        schedule_backfill(sid, attempt + 1)
+    else:
+        log.info("回填放弃: %s 仍有消息没匹配到 message_id（撤回/引用不可用）", sid)
 
 
 def jjy_revoke(conversation_id, message_id):
