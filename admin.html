@@ -703,7 +703,7 @@ function trigSummary(w){
 }
 function actSummary(w){
   return (w.actions||[]).map(a=>{
-    if(a.type==='forward') return `<span class="bdg blue">转发 → ${a.targets?.length||0} 个目标</span>`;
+    if(a.type==='reply') return `<span class="bdg blue">自定义回复</span>`;
     return `<span class="bdg amber">调用接口${a.reply?' · 回复返回值':''}</span>`;
   }).join('')||'<span class="bdg red">无动作</span>';
 }
@@ -712,7 +712,7 @@ function renderWfs(){
   const box=$('#wfList');
   if(!WORKFLOWS.length){
     box.innerHTML=`<div class="empty"><svg><use href="#i-flow"/></svg><br>还没有工作流<br>
-      <span style="font-size:12px">工作流 = 消息触发条件 + 一串动作（转发消息 / 调用接口并回复）</span><br>
+      <span style="font-size:12px">工作流 = 消息触发条件 + 一串动作（自定义回复 / 调用接口）</span><br>
       <button class="btn primary" id="btnNewWf2" style="margin-top:14px">
         <svg><use href="#i-plus"/></svg>新建工作流</button></div>`;
     $('#btnNewWf2').onclick=()=>openEditor(BLANK(),false,true); return;
@@ -953,8 +953,8 @@ function paintSum(){
   collectSafe();
   const t=M.trigger,c=t.content,w=[];
   if(t.kind==='schedule'){
-    const acts=(M.actions||[]).map(a=>a.type==='forward'
-      ? `发送到 ${a.targets&&a.targets.length?`<span class="kw">${a.targets.length} 个目标</span>`:'<span class="miss">未选目标</span>'}`
+    const acts=(M.actions||[]).map(a=>a.type==='reply'
+      ? `回复 ${a.template?'<span class="kw">自定义内容</span>':'<span class="miss">未填内容</span>'}`
       : `调用接口${a.url?'':' <span class="miss">未填地址</span>'}${a.reply?(a.reply_to&&a.reply_to.length?'并回复结果':' <span class="miss">未选回复目标</span>'):''}`);
     $('#dSumTx').innerHTML=`<b>${schDesc(t.schedule||{})}</b>，<b>就</b> `+
       (acts.length?acts.join('，然后 '):'<span class="miss">还没有动作</span>');
@@ -973,8 +973,8 @@ function paintSum(){
   else if(c.mode==='all'&&c.keywords.length) w.push(`同时含 <span class="kw">${esc(c.keywords.join(' + '))}</span>`);
   else if(c.mode==='regex'&&c.regex) w.push(`匹配正则 <span class="kw">${esc(c.regex)}</span>`);
   const when=w.length?w.join(' 且 '):'<b>任意会话的任意消息</b>';
-  const acts=(M.actions||[]).map(a=>a.type==='forward'
-    ? `转发到 ${a.targets&&a.targets.length?`<span class="kw">${a.targets.length} 个目标</span>`:'<span class="miss">未选目标</span>'}`
+  const acts=(M.actions||[]).map(a=>a.type==='reply'
+    ? `回复 ${a.template?'<span class="kw">自定义内容</span>':'<span class="miss">未填内容</span>'}`
     : `调用接口${a.url?'':' <span class="miss">未填地址</span>'}${a.reply?'并回复结果':''}`);
   const then=acts.length?acts.join('，然后 '):'<span class="miss">还没有动作</span>';
   $('#dSumTx').innerHTML=`当 ${when}，<b>就</b> ${then}`;
@@ -1059,7 +1059,7 @@ function renderEditor(){
       <textarea id="fSchText" rows="2" placeholder="例：早会提醒，请各位同步昨日进展">${esc(sc.text||'')}</textarea>
       <div class="varhint">定时触发没有来源消息，所以 <code>{content}</code> 取这里填的文字；
         <code>{date}</code> <code>{time}</code> 正常可用，<code>{sender_name}</code> 为「定时任务」。
-        转发目标 / 回复目标<b>必须指定</b>(没有“来源会话”可回)。</div></div>
+        ⚠️ 定时触发<b>没有来源会话</b>，「自定义回复」发不出去，要发消息请用「调用接口」。</div></div>
     <div id="schNext" class="nextfire"></div>
   </div>
 
@@ -1123,9 +1123,9 @@ function renderEditor(){
     <span><b>至少要有一个动作</b>，否则无法保存。多个动作<b>按顺序执行、互相隔离</b>——一个失败不影响其它。</span></div>
   <div id="actList"></div>
   <div class="addtiles">
-    <button class="addtile" id="btnAddFwd">
+    <button class="addtile" id="btnAddReply">
       <span class="ai g"><svg><use href="#i-fwd"/></svg></span>
-      <span><span class="an">转发消息</span><span class="ad">把消息转到其他群或人，可套模板</span></span></button>
+      <span><span class="an">自定义回复</span><span class="ad">按模板回一条到当前会话</span></span></button>
     <button class="addtile" id="btnAddHttp">
       <span class="ai b"><svg><use href="#i-api"/></svg></span>
       <span><span class="an">调用接口</span><span class="ad">调 HTTP 接口，可把返回内容发回会话</span></span></button>
@@ -1147,7 +1147,7 @@ function renderEditor(){
   <div class="crow" id="testBox">
     <div class="crow-hd" onclick="this.parentElement.classList.toggle('open')">
       <span class="pm"></span><span class="t">测试 · ${sched?'立即试跑一次(不等到点)':'用一条模拟消息试跑'}</span>
-      <span class="hint">转发只预览不发送；接口可真实调用</span></div>
+      <span class="hint">回复只预览不发送；接口可真实调用</span></div>
     <div class="crow-bd">
       <div id="tsMsgBox" class="${sched?'hide':''}">
       <div class="frow">
@@ -1211,8 +1211,8 @@ function renderEditor(){
   bindSeg('segCt',v=>{M.trigger.content.mode=v;
     $('#ctKw').classList.toggle('hide',v!=='any'&&v!=='all');
     $('#ctRx').classList.toggle('hide',v!=='regex');paintSum();});
-  $('#btnAddFwd').onclick=()=>{collectActions();M.actions.push({type:'forward',targets:[],
-    template:'【{source_name}】{sender_name}：{content}'});renderActions();};
+  $('#btnAddReply').onclick=()=>{collectActions();M.actions.push({type:'reply',
+    template:''});renderActions();};
   $('#btnAddHttp').onclick=()=>{collectActions();M.actions.push({type:'http',method:'GET',url:'',headers:'',body:'',
     timeout_sec:10,retries:1,reply:true,reply_path:'',reply_template:'{result}',reply_to:[]});renderActions();};
   $('#btnRefreshMem').onclick=()=>syncSenderList(true);   // 只有这个按钮会真的重拉群列表
@@ -1325,17 +1325,15 @@ function renderActions(){
       还没有动作 · 从下面选一个添加</div>`;paintSum();return;
   }
   box.innerHTML=M.actions.map((a,i)=>{
-    const fw=a.type==='forward';
+    const fw=a.type==='reply';
     const hd=`<div class="act-hd"><span class="no">${i+1}</span>
       <span class="ty ${fw?'g':'b'}"><svg><use href="#${fw?'i-fwd':'i-api'}"/></svg></span>
-      <span class="tt">${fw?'转发消息':'调用接口'}</span><span class="sp"></span>
+      <span class="tt">${fw?'自定义回复':'调用接口'}</span><span class="sp"></span>
       <button class="ab" data-op="up" data-i="${i}" title="上移"><svg class="ic"><use href="#i-up"/></svg></button>
       <button class="ab" data-op="down" data-i="${i}" title="下移"><svg class="ic"><use href="#i-down"/></svg></button>
       <button class="ab del" data-op="del" data-i="${i}" title="删除"><svg class="ic"><use href="#i-trash"/></svg></button></div>`;
-    if(a.type==='forward') return `<div class="act fw">${hd}<div class="act-bd">
-      <div class="ffield"><div class="lab">转发到<span class="tip">群或联系人，可多选</span></div>
-        ${mselHTML('aTgt'+i,PICKER,a.targets)}</div>
-      <div class="ffield"><div class="lab">消息模板</div>
+    if(a.type==='reply') return `<div class="act fw">${hd}<div class="act-bd">
+      <div class="ffield"><div class="lab">回复内容<span class="tip">发回这条消息所在的会话，不用选目标</span></div>
         <input type="text" class="aIn" data-i="${i}" data-k="template" value="${esc(a.template||'')}">
         <div class="varhint">变量：<code>{content}</code> 消息内容 · <code>{sender_name}</code> 发送人 ·
           <code>{source_name}</code> 来源会话名 · <code>{time}</code> <code>{date}</code></div></div>
@@ -1378,7 +1376,7 @@ function renderActions(){
   }).join('');
 
   M.actions.forEach((a,i)=>{
-    if(a.type==='forward') mselBind('aTgt'+i);
+    if(a.type==='reply') ;
     else mselBind('aRto'+i);});
   $$('#actList .aIn').forEach(el=>el.onchange=()=>{
     const a=M.actions[+el.dataset.i]; if(!a)return;
@@ -1403,7 +1401,7 @@ function collectActions(){
   // 只读取“已经渲染出来”的多选器。动作卡片尚未渲染时(如刚打开编辑器)
   // 若无条件覆盖，会把已保存的目标清成空数组——务必先判存在。
   M.actions.forEach((a,i)=>{
-    if(a.type==='forward'){ if(MSEL['aTgt'+i]) a.targets=mselGet('aTgt'+i); }
+    if(a.type==='reply'){ /* 只有模板，模板走 aIn 统一收集 */ }
     else { if(MSEL['aRto'+i]) a.reply_to=mselGet('aRto'+i); }});
 }
 function collect(){
@@ -1428,7 +1426,7 @@ function collect(){
 function validate(){
   if(!M.actions.length) return '至少要有一个动作';
   for(const a of M.actions){
-    if(a.type==='forward'&&!a.targets.length) return '「转发消息」还没选转发目标';
+    if(a.type==='reply'&&!(a.template||'').trim()) return '「自定义回复」还没填回复内容';
     if(a.type==='http'&&!/^https?:\/\//.test(a.url||'')) return '「调用接口」的地址必须以 http(s):// 开头';
   }
   if(M.trigger.kind==='schedule'){
@@ -1489,7 +1487,7 @@ async function runTest(){
     else{
       const rows=(j.results||[]).map(r=>`<div class="ln">
         <span class="b">${r.ok?'✅':'❌'}</span>
-        <span><b>${r.action==='forward'?'转发':'接口'}</b> · ${esc(r.detail)}</span></div>`).join('');
+        <span><b>${r.action==='reply'?'回复':'接口'}</b> · ${esc(r.detail)}</span></div>`).join('');
       out.innerHTML=`<div class="tres okk"><div class="ln"><span class="b">✅</span><span><b>命中触发条件</b></span></div>${rows}</div>`;}
   }catch(e){out.innerHTML=`<div class="tres no">请求失败：${esc(e.message||e)}</div>`;}
   btn.disabled=false;
@@ -1505,7 +1503,7 @@ function runRowHTML(r){
     <td>${esc(r.source_name||r.source)}<div class="rdetail">${esc(r.sender||'')}</div></td>
     <td style="max-width:260px">${esc(r.content)}</td>
     <td>${(r.results||[]).map(x=>`<div class="rdetail" style="color:${x.ok?'var(--text-2)':'var(--red)'}">
-      ${x.ok?'✅':'❌'} ${x.action==='forward'?'转发':'接口'} · ${esc(x.detail)}</div>`).join('')||'—'}</td>
+      ${x.ok?'✅':'❌'} ${x.action==='reply'?'回复':'接口'} · ${esc(x.detail)}</div>`).join('')||'—'}</td>
   </tr>`;
 }
 function paintRuns(){
@@ -1544,7 +1542,7 @@ async function loadStatus(){
       ['健康状态',h.healthy===null?'检测中':(h.healthy?'正常':(h.last_error||'异常')),'sm'],
       ['本次收到消息',st.received||0],
       ['本次发出',(jy.sent||0)+(jy.send_fail?` (失败${jy.send_fail})`:'')],
-      ['本次转发/回复',st.forwarded||0],
+      ['本次回复',st.forwarded||0],
       ['历史消息(库)',so.messages||0],
       ['会话数(库)',so.sessions||0],
       ['工作流',`${w.enabled||0}/${w.count||0} 启用`,'sm'],

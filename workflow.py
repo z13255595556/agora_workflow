@@ -13,7 +13,8 @@ workflow.py — 消息工作流引擎 (纯标准库)
     content    内容匹配: none / any(任一关键词) / all(全部关键词) / regex(正则)
 
   动作(按顺序执行，互相隔离，一个失败不影响其它)：
-    forward    转发到其他群/人(支持模板变量)
+    reply      自定义回复(支持模板变量)。发到**来源会话** —— 不需要配任何 id，
+               推送里带的 chat_id 永远是当前有效的那个
     http       调用接口(GET/POST、自定义头/体、超时、重试)，
                可把返回内容(支持 JSON 路径提取)按模板回复到来源会话或指定会话
 
@@ -21,7 +22,7 @@ workflow.py — 消息工作流引擎 (纯标准库)
     * 动作在后台 worker 线程池执行，DLL 推送线程永不被 HTTP 阻塞
     * HTTP 超时 + 自动重试(退避)；响应体积/回复长度有上限
     * 每工作流冷却时间(cooldown_sec) + 每分钟触发上限(max_per_min)，防风暴/防死循环
-    * 自己发出的消息永不触发(防转发死循环)
+    * 自己发出的消息永不触发(防回复死循环)
     * 运行记录(环形 200 条)供管理页排查
 
 模板变量：{content} {sender} {sender_name} {source} {source_name} {time} {date}
@@ -168,8 +169,8 @@ class WorkflowEngine:
                 "content": {"mode": ("any" if kws else "none") if r.get("keyword_mode") != "all" else "all",
                             "keywords": kws, "regex": ""},
             },
-            "actions": [{"type": "forward",
-                         "targets": r.get("target_group_ids") or [],
+            # 老 rules.json 的转发目标已不再支持(见 _norm)，模板留下，回到来源会话
+            "actions": [{"type": "reply",
                          "template": r.get("template") or "【{source_name}】{sender_name}：{content}"}],
         })
 
@@ -208,9 +209,9 @@ class WorkflowEngine:
         acts = []
         for a in (w.get("actions") or []):
             a = dict(a or {})
-            if a.get("type") == "forward":
-                a["targets"]  = [x for x in (a.get("targets") or []) if x]
-                a.setdefault("template", "【{source_name}】{sender_name}：{content}")
+            if a.get("type") == "reply":
+                a.pop("targets", None)        # 老的 forward 迁过来时可能带着
+                a.setdefault("template", "")
             elif a.get("type") == "http":
                 a.setdefault("method", "GET")
                 a["method"] = a["method"].upper() if a.get("method", "").upper() in ("GET", "POST") else "GET"
@@ -224,6 +225,14 @@ class WorkflowEngine:
                 a.setdefault("reply_path", "")
                 a.setdefault("reply_template", "{result}")
                 a["reply_to"]    = [x for x in (a.get("reply_to") or []) if x]
+            elif a.get("type") == "forward":
+                # 「转发到其他群/人」已下线：语聚只认聚合对话 chat_id，而那个 id
+                # 只在对方先说话之后才存在，选人面板给的联系人 id 根本发不出去。
+                # 老配置里的 forward 就地转成「自定义回复」——模板留着，目标丢掉。
+                self.log.warning("工作流[%s] 的「转发消息」动作已下线，转成回复到"
+                                 "来源会话（原转发目标 %s 被丢弃）",
+                                 w.get("name") or w.get("id"), a.get("targets") or [])
+                a = {"type": "reply", "template": a.get("template") or ""}
             else:
                 continue
             acts.append(a)
@@ -556,8 +565,8 @@ class WorkflowEngine:
         results = []
         for a in wf.get("actions") or []:
             try:
-                if a.get("type") == "forward":
-                    results.append(self._do_forward(a, ctx, dry))
+                if a.get("type") == "reply":
+                    results.append(self._do_reply(a, ctx, dry))
                 elif a.get("type") == "http":
                     if dry and not run_http:
                         results.append({"action": "http", "ok": True,
@@ -595,21 +604,29 @@ class WorkflowEngine:
                     self.log.warning("运行记录持久化失败: %s", e)
         return results
 
-    def _do_forward(self, a, ctx, dry=False):
+    def _do_reply(self, a, ctx, dry=False):
+        """自定义回复：把模板渲染后发回**来源会话**。
+
+        不需要配任何目标 id —— 目标就是这条消息所在的会话，而推送里带的
+        chat_id 永远是当前有效的那个。这也是为什么它不会踩「联系人 id 发不
+        出去」那个坑：根本不经过选人面板。
+
+        ⚠️ 定时工作流没有来源会话(_sched_msg 的 user_id 是空)，所以它配这个
+        动作发不出去 —— 定时任务要发消息只能走 http 动作。
+        """
         text = self._render(a.get("template"), ctx)[:MAX_REPLY_LEN]
-        targets = a.get("targets") or []
-        if not targets:
-            return {"action": "forward", "ok": False, "detail": "未配置转发目标"}
+        if not text.strip():
+            return {"action": "reply", "ok": False, "detail": "回复内容为空"}
+        tgt = ctx.get("source") or ""
+        if not tgt:
+            return {"action": "reply", "ok": False,
+                    "detail": "没有来源会话可回（定时工作流请改用「调用接口」）"}
         if dry:
-            return {"action": "forward", "ok": True,
-                    "detail": "预览 → %s：%s" % ("、".join(targets), text[:120])}
-        sent, fail = [], []
-        for tgt in targets:
-            (sent if self.send_text(tgt, text) else fail).append(tgt)
-        detail = "已转发 %d/%d" % (len(sent), len(targets))
-        if fail:
-            detail += " (失败: %s)" % "、".join(fail)
-        return {"action": "forward", "ok": not fail, "detail": detail}
+            return {"action": "reply", "ok": True,
+                    "detail": "预览 → %s：%s" % (ctx.get("source_name") or tgt, text[:120])}
+        ok = self.send_text(tgt, text)
+        return {"action": "reply", "ok": ok,
+                "detail": ("已回复：" if ok else "回复失败：") + text[:80]}
 
     def _do_http(self, a, ctx, msg, dry=False):
         url = self._render(a.get("url"), ctx, urlencode=True)
