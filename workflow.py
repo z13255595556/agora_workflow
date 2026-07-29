@@ -445,21 +445,32 @@ class WorkflowEngine:
         mtype   = msg.get("msg_type")
         at_me   = bool(msg.get("at_me"))
 
-        if t.get("sessions") and sid not in t["sessions"]:
+        # 「人」和「会话」是两个维度，各认各的 id，混用就是本来那个 bug。
+        # 推送里的 addition 是唯一能把聚合对话的 id 和企微接口的 id 对上的桥：
+        #   external_contact_id  人  = 联系人接口 wxid = 群成员接口 imContactId
+        #                             (实测跨群稳定，同一个人在 99 个群里同一个值)
+        #   external_chat_id     会话= 联系人接口 chatId。⚠️ 只在私聊有意义 ——
+        #                             群聊时它是**群会话**自己的 id，不是发送人的
+        #   room_id              群  = 群列表接口 imRoomId，连 "R:" 前缀一起相等
+        add  = (msg.get("jjy") or {}).get("addition") or {}
+        peer = str(add.get("external_contact_id") or "")
+        alt_chat = "S:" + str(add.get("external_chat_id") or "")
+        alt_room = str((msg.get("jjy") or {}).get("room_id") or "")
+
+        # 会话面板列的是本地会话 id；企微那边有、但还没来过消息的群/联系人，
+        # 列的是 imRoomId / "S:"+chatId —— 两个别名让这类也能匹配上。
+        if t.get("sessions") and sid not in t["sessions"] \
+           and alt_chat not in t["sessions"] and alt_room not in t["sessions"]:
             return False, "会话不匹配"
         ct = t.get("chat_type", "any")
         if ct == "group" and not sid.startswith("R:"):
             return False, "非群聊消息(条件要求仅群聊)"
         if ct == "private" and not sid.startswith("S:"):
             return False, "非私聊消息(条件要求仅私聊)"
-        if t.get("senders"):
-            # 发送人有两个 id：聚合对话推送给的 user_id(32位hex)，和企微群成员
-            # 接口给的 imContactId(16位数字)。选人面板列的是后者，消息里带的是
-            # 前者 —— 只比一个必然永远不匹配，所以两个都比。
-            alt = str(((msg.get("jjy") or {}).get("addition") or {})
-                      .get("external_contact_id") or "")
-            if sender not in t["senders"] and not (alt and alt in t["senders"]):
-                return False, "发送人不匹配"
+        # 发送人只认「人」的 id：推送的 user_id，或 external_contact_id。
+        if t.get("senders") and sender not in t["senders"] \
+           and peer not in t["senders"]:
+            return False, "发送人不匹配"
         stype = t.get("sender_type", "any")
         if stype in ("internal", "external"):
             se = msg.get("sender_external")
@@ -736,6 +747,12 @@ class WorkflowEngine:
             "msg_type":    int(sample.get("msg_type") or 2),
             "at_me":       1 if sample.get("at_me") else 0,
             "time_stamp":  _now(),
+            # 试跑面板只给一个"发送人 id"，可真实报文里人有两个 id(推送 user_id /
+            # addition.external_contact_id)，条件里存的是哪个取决于从哪个面板选的。
+            # 不把它也放进 addition 的话，从选人面板挑的人试跑必报"发送人不匹配",
+            # 用户会以为没修好 —— 这是反馈回路，不是锦上添花。
+            "jjy": {"addition": {
+                "external_contact_id": sample.get("sender") or ""}},
         }
         # 发送人身份：样例显式指定(0/1)优先，否则按 id 自动判断
         se = sample.get("sender_external")

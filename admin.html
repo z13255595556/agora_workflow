@@ -192,6 +192,12 @@
   .msel-it.off:hover{background:transparent}
   .msel-it input{width:auto;box-shadow:none!important}
   .msel-it .tg{font-size:10px;color:var(--text-3);border:1px solid var(--border-2);border-radius:4px;padding:0 4px}
+  /* 「这个人在哪个群」。群名可能很长，截断 + title 看全名；
+     "+N" 单独一段且 flex:none —— 跟着群名一起被省略号吃掉的话，
+     "还在另外几个群"这个最该看见的信息就没了 */
+  .msel-it .sub{color:var(--text-3);font-size:11px;max-width:38%;min-width:0;
+                overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+  .msel-it .subn{color:var(--text-3);font-size:11px;flex:none}
   .msel-it .idt{color:var(--text-3);font-size:11px;margin-left:auto;font-family:var(--mono)}
   .msel-ft{display:flex;gap:6px;padding:7px 10px;border-top:1px solid var(--border)}
   .msel-ft input{font-size:12px;padding:5px 9px}
@@ -752,9 +758,27 @@ async function saveWfs(){
 $('#btnNewWf').onclick=()=>openEditor(BLANK(),false,true);
 $('#btnSyncPicker').onclick=async()=>{
   const b=$('#btnSyncPicker');b.disabled=true;b.textContent='同步中…';
-  try{await api('gw/sync-contacts',{});await loadPicker();toast(`已同步：群 ${GROUPS.length} · 联系人 ${CONTACTS.length}`);}
+  try{const j=await api('gw/sync-contacts',{});await loadPicker();
+    toast(`已同步：群 ${GROUPS.length} · 联系人 ${CONTACTS.length}`);
+    await offerMigrate(j.migratable);}
   catch(e){toast('同步失败');}
   b.disabled=false;b.innerHTML='<svg><use href="#i-sync"/></svg>同步通讯录';};
+
+// 存量工作流里「指定发送人」还存着老的联系人**会话** id(S:chatId)，那些条件
+// 从来没匹配上过 —— 也就是说这些工作流一直是死的。改成人 id 它们会**立刻开始
+// 触发**，动作里可能有转发或 http 回调，所以必须先问过人，不能静默改。
+async function offerMigrate(plan){
+  if(!plan||!plan.length) return;
+  const wfs=[...new Set(plan.map(x=>x.wf))];
+  const lines=plan.slice(0,8).map(x=>`  · ${x.wf}：${x.old} → ${x.new}`).join('\n');
+  if(!confirm(`发现 ${plan.length} 项「指定发送人」存的是旧的会话 id，涉及 ${wfs.length} 条工作流：\n\n`
+    +lines+(plan.length>8?`\n  …… 共 ${plan.length} 项`:'')
+    +`\n\n这些条件此前从未匹配成功过，也就是说这些工作流一直没在跑。\n`
+    +`修正后它们会立刻开始触发（包含各自配置的转发/HTTP 动作）。\n\n现在修正吗？`)) return;
+  const r=await api('gw/migrate-senders',{});
+  toast(r.migrated?`已修正 ${r.migrated} 项发送人 id`:'没有可修正的项');
+  if(r.migrated) await loadWfs();
+}
 
 // ==================== 多选器组件 ====================
 function mselHTML(key,items,selected,{placeholder='搜索…',manual='手动输入 id 后回车(可逗号分隔多个)'}={}){
@@ -769,7 +793,9 @@ function mselHTML(key,items,selected,{placeholder='搜索…',manual='手动输�
 function mselPaint(key){
   const box=document.querySelector(`.msel[data-key="${key}"]`); if(!box)return;
   const st=MSEL[key], q=st.q.trim();
-  const filtered=st.items.filter(x=>!q||x.id.includes(q)||(x.name||'').includes(q));
+  // sub 也参与搜索：勾了多个群时可以直接敲群名，把某个群的人筛出来
+  const filtered=st.items.filter(x=>!q||x.id.includes(q)||(x.name||'').includes(q)
+                                    ||(x.sub||'').includes(q));
   // 已选的排到列表最前(各自保持原顺序，稳定)；勾选当下不重排，只在重新渲染时置顶
   const list=filtered.filter(x=>st.sel.has(x.id)).concat(filtered.filter(x=>!st.sel.has(x.id)));
   const lb=box.querySelector('.msel-list');
@@ -779,6 +805,8 @@ function mselPaint(key){
       ${x.disabled?'title="还没收到过这个会话的消息，暂时不能作为发送目标"':''}>
       <input type="checkbox" data-id="${esc(x.id)}" ${st.sel.has(x.id)?'checked':''} ${x.disabled?'disabled':''}>
       <span class="tg">${esc(x.tag||'')}</span><span>${esc(x.name||x.id)}</span>
+      ${x.sub?`<span class="sub" title="${esc(x.subTitle||x.sub)}">${esc(x.sub)}</span>`:''}
+      ${x.more?`<span class="subn" title="${esc(x.subTitle||'')}">+${x.more}</span>`:''}
       <span class="idt">${esc(x.id)}</span></label>`).join('')
     :`<div class="msel-none">${q?'没有匹配项':'暂无数据 · 可点「同步通讯录」或在下方手动输入 id'}</div>`;
   box.querySelector('.cnt').textContent=st.sel.size?`已选 ${st.sel.size}`:'';
@@ -1202,7 +1230,35 @@ function bindSeg(id,fn){
     fn(b.dataset.v);});
 }
 // ---- 「指定发送人」候选列表：按会话类型自动切换，群成员走缓存 ----
-const CONTACT_ITEMS=()=>CONTACTS.map(x=>({id:x.id,name:x.name||x.id,tag:x.is_external?'外部':'同事'}));
+// ⚠️ 发送人面板要的是**人**的 id(uid=wxid)，不是会话 id(x.id="S:"+chatId)。
+// 推送里带的是前者(external_contact_id)，拿后者去比永远匹配不上 —— 这就是
+// 「指定发送人」一直不生效的原因。没有 wxid 的联系人当不了发送人，直接不列。
+const CONTACT_ITEMS=()=>CONTACTS.filter(x=>x.wxid)
+  .map(x=>({id:x.wxid,name:x.name||x.wxid,tag:x.is_external?'外部':'同事'}));
+// 群 id -> 群名。gid 可能来自企微群列表，也可能是本地会话
+const groupName=gid=>((GROUPS.find(x=>x.id===gid)||SESSIONS.find(x=>x.id===gid)||{}).name)||gid;
+// 群成员并集。同一个人在多个群里只出一条(imContactId 跨群稳定)，
+// 勾了多个群时在名字后面标出他在哪个群 —— 只勾一个群时人人都在那个群，标了是噪音。
+function memberItems(gids){
+  const multi=gids.length>1, seen=new Map();
+  gids.forEach(g=>{
+    const gn=groupName(g);
+    (MEMCACHE[g]||[]).forEach(m=>{
+      if(!m.id)return;
+      const it=seen.get(m.id)||{id:m.id,name:m.name||m.id,tag:'成员',gs:[]};
+      it.gs.push(gn); seen.set(m.id,it);
+    });
+  });
+  return [...seen.values()].map(it=>{
+    const gs=it.gs; delete it.gs;
+    if(multi&&gs.length){
+      it.sub=gs[0];                 // 群名，长了会被省略号截断
+      it.more=gs.length-1;          // 还在几个群，单独渲染，不参与截断
+      it.subTitle=gs.join('、');    // hover 看全量
+    }
+    return it;
+  });
+}
 // 已勾选但不在新列表里的，保留成“手动”项，切换列表时不会把选好的人弄丢
 function keepSel(st,items){
   const out=[...items];
@@ -1213,22 +1269,22 @@ function keepSel(st,items){
 function senderItems(t){
   const ct=t.chat_type||'any';
   if(ct!=='group') return CONTACT_ITEMS();
-  const seen=new Map();
-  (t.sessions||[]).filter(x=>x.startsWith('R:'))
-    .forEach(g=>(MEMCACHE[g]||[]).forEach(m=>{
-      if(m.id&&!seen.has(m.id)) seen.set(m.id,{id:m.id,name:m.name||m.id,tag:'成员'});}));
-  return [...seen.values()];
+  return memberItems((t.sessions||[]).filter(x=>x.startsWith('R:')));
 }
-// 只在缺缓存时请求后端；force=true 才让后端跳过缓存重拉群列表
+// 只在缺缓存时请求后端；force=true 才让后端跳过缓存重拉群列表。
+// 一次把所有群打包发出去 —— 按群逐个请求的话，force 时后端每个群都会把整份
+// 群列表重拉一遍，正是当初要限制"只取前 10 个群"的原因。批量后没有上限。
 async function fetchMembers(gids,force){
   const btn=$('#btnRefreshMem');
   if(btn){btn.disabled=true;btn.textContent='加载中…';}
-  for(const g of gids.slice(0,10)){
-    try{
-      const j=await api('gw/members',{group_id:g,refresh:!!force});
-      MEMCACHE[g]=j.list||[];
-    }catch(e){ if(!MEMCACHE[g]) MEMCACHE[g]=[]; }
-  }
+  try{
+    const j=await api('gw/members',{group_ids:gids,refresh:!!force});
+    const mp=j.map||{};
+    gids.forEach(g=>MEMCACHE[g]=mp[g]||[]);
+    // 哪个群为什么没成员，别咽掉 —— 上面的提示条会让用户来这儿看
+    Object.entries(j.errors||{}).forEach(([g,e])=>console.warn(`群成员 ${groupName(g)} (${g}): ${e}`));
+    if(j.error) console.warn('群列表:',j.error);
+  }catch(e){ gids.forEach(g=>{if(!MEMCACHE[g])MEMCACHE[g]=[];}); }
   if(btn){btn.disabled=false;btn.innerHTML='<svg><use href="#i-sync"/></svg>刷新群成员';}
 }
 async function syncSenderList(force){
@@ -1243,13 +1299,15 @@ async function syncSenderList(force){
     }else{
       const need=force?gids:gids.filter(g=>!MEMCACHE[g]);
       if(need.length) await fetchMembers(need,force);
-      const seen=new Map();
-      gids.forEach(g=>(MEMCACHE[g]||[]).forEach(m=>{
-        if(m.id&&!seen.has(m.id)) seen.set(m.id,{id:m.id,name:m.name||m.id,tag:'成员'});}));
-      st.items=keepSel(st,[...seen.values()]);
-      if(hint)hint.textContent=`仅群聊：只列所选 ${gids.length} 个群的 ${seen.size} 名成员`
+      const items=memberItems(gids);
+      st.items=keepSel(st,items);
+      // 覆盖数按**真拿到成员**的群算。以前这里报的是勾了几个群，而实际只拉前 10 个，
+      // 看起来是全的
+      const got=gids.filter(g=>(MEMCACHE[g]||[]).length).length;
+      if(hint)hint.textContent=`仅群聊：${got}/${gids.length} 个群，共 ${items.length} 名成员`
+        +(got<gids.length?'（其余群拿不到成员，见控制台）':'')
         +(force?'（已刷新）':(need.length?'':'（缓存）'));
-      if(force) toast(`已刷新 ${seen.size} 名群成员`);
+      if(force) toast(`已刷新 ${items.length} 名群成员`);
     }
   }else if(ct==='private'){
     st.items=keepSel(st,CONTACT_ITEMS());

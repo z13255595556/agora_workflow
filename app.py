@@ -609,7 +609,15 @@ def jjy_contacts(force=False):
 
 
 def contacts_for_picker(force=False):
-    """联系人列表 -> 选人面板形态。id 优先用 chatId(发送接口认的就是它)。"""
+    """联系人列表 -> 选人面板形态。
+
+    ⚠️ 一条记录里有**两个不同维度**的 id，别混：
+      id    会话 id = "S:"+chatId。选「指定会话」和发消息用它(发送接口认 chatId)
+      wxid  人   id。选「指定发送人」用它 —— 它和群成员接口的 imContactId 是
+            同一个空间，也正是推送里 user_addition.external_contact_id 的值
+    以前发送人面板拿的是 id(会话 id)，和推送里的人 id 根本不是一个空间，
+    所以「指定发送人」永远匹配不上。
+    """
     raw, err = jjy_contacts(force)
     out = []
     for c in raw:
@@ -629,6 +637,46 @@ def contacts_for_picker(force=False):
         })
     out.sort(key=lambda x: (not x["paired"], x["name"]))
     return out, err
+
+
+def sender_id_migration(contacts, apply=False):
+    """存量工作流里「指定发送人」的老 id -> 人 id。返回待改写清单。
+
+    发送人面板以前存的是 "S:"+chatId(会话 id)，和推送里的 external_contact_id
+    压根不是一个空间 —— 那些条件**从来没匹配上过**，等于这些工作流一直是死的。
+
+    ⚠️ 所以这件事默认只算不改(apply=False)。改完它们会**立刻开始触发** ——
+    动作里可能有转发(把客户对话转到别处)或 http 回调，一条沉睡两个月的规则
+    突然活过来是要人点头的，不能跟在"同步通讯录"后面静默发生。
+
+    认不出的值原样留着，绝不删：_match 里 `if t.get("senders") and ...` 意味着
+    空列表 = 不限发送人，删值会把"只对张三"劣化成"对所有人"。
+    """
+    if not WF:
+        return []
+    m = {c["id"]: c["wxid"] for c in contacts if c.get("id") and c.get("wxid")}
+    if not m:
+        return []
+    wfs, plan = WF.list(), []
+    for w in wfs:
+        t = w.get("trigger") or {}
+        out, hit = [], False
+        for s in (t.get("senders") or []):
+            v = m.get(s)
+            if v:
+                hit = True
+                plan.append({"wf": w.get("name") or w.get("id"),
+                             "old": s, "new": v})
+            v = v or s
+            if v not in out:
+                out.append(v)
+        if hit and apply:
+            t["senders"] = out
+    if plan and apply:
+        WF.save(wfs)
+        log.info("工作流「指定发送人」id 迁移: 改写 %d 项（联系人会话id -> 人id）",
+                 len(plan))
+    return plan
 
 
 # ============================ 企微群列表 ============================
@@ -704,33 +752,79 @@ def groups_for_picker(force=False):
     return out, err
 
 
-def members_of(session_id, force=False):
-    """某会话对应企微群的成员列表 -> [{id,name,...}]。"""
-    if str(session_id or "").startswith("S:"):
+def _room_index(force=False):
+    """{imRoomId/wecomChatId: 群对象}。批量查成员时只建一次，避免每个群都全表扫。"""
+    raw, err = jjy_group_list(force)
+    idx = {}
+    for g in raw:
+        for k in (g.get("imRoomId"), g.get("wecomChatId")):
+            if k:
+                idx.setdefault(str(k), g)
+    return idx, err
+
+
+def _members_in(g):
+    """群对象 -> 成员列表(选人面板形态)。
+
+    id 用 imContactId —— 那是**人**的 id，和联系人接口的 wxid、推送里的
+    external_contact_id 同一个空间，所以一个人勾一次，他所在的每个群都能命中。
+    """
+    return [{
+        "id": str(m.get("imContactId") or ""),
+        "name": m.get("nickName") or "",
+        "avatar": m.get("avatarUrl") or "",
+        "corp": m.get("corpName") or "",
+        "external_id": str(m.get("externalUserId") or ""),
+        # type: 1=个人微信 3=企微用户。⚠️ 3 不等于"本司同事" —— 实测 787 个 type=3
+        # 里有 105 个是他司企微(环信/千里千寻/麦驰…)，imContactId 一样 1688 开头。
+        # 真要分内外部，判据是 corpName 是否本司 / externalUserId 是否非空。
+        "type": m.get("type"),
+        "is_owner": 1 if m.get("identity") == 2 else 0,
+        "join_time": m.get("joinTime") or 0,
+    } for m in (g.get("memberList") or []) if isinstance(m, dict)]
+
+
+def _members_of(session_id, idx):
+    """单个会话查成员。idx 由 _room_index() 建好。返回 (list, err)。"""
+    sid = str(session_id or "")
+    if sid.startswith("S:"):
         return [], "私聊没有群成员"
-    sess = STORE.get_session(session_id) if STORE else None
+    sess = STORE.get_session(sid) if STORE else None
     rid = (sess or {}).get("room_id") or ""
     if not rid and not sess:
         # 本地压根没这个会话 —— 那前端传的多半就是 imRoomId(从群列表点进来的)。
-        # 不靠格式猜: 对不上的话下面的循环自然会返回"没这个群"。
-        rid = str(session_id or "")
+        # 不靠格式猜: 对不上的话下面查索引自然会返回"没这个群"。
+        rid = sid
     if not rid:
         return [], "该会话没有对应的企微群（非企微渠道，或还没收到过消息）"
-    raw, err = jjy_group_list(force)
-    for g in raw:
-        if str(g.get("imRoomId") or "") == rid or str(g.get("wecomChatId") or "") == rid:
-            return [{
-                "id": str(m.get("imContactId") or ""),
-                "name": m.get("nickName") or "",
-                "avatar": m.get("avatarUrl") or "",
-                "corp": m.get("corpName") or "",
-                "external_id": str(m.get("externalUserId") or ""),
-                # type: 1=个人微信 2=企业微信 3=内部同事(文档两处口径不一, 原样透出)
-                "type": m.get("type"),
-                "is_owner": 1 if m.get("identity") == 2 else 0,
-                "join_time": m.get("joinTime") or 0,
-            } for m in (g.get("memberList") or []) if isinstance(m, dict)], err
-    return [], err or "群列表里没有这个群（可能不在托管账号名下）"
+    g = idx.get(rid)
+    if not g:
+        return [], "群列表里没有这个群（可能不在托管账号名下）"
+    return _members_in(g), ""
+
+
+def members_of(session_id, force=False):
+    """某会话对应企微群的成员列表 -> [{id,name,...}]。"""
+    idx, err = _room_index(force)
+    lst, e = _members_of(session_id, idx)
+    return lst, e or err
+
+
+def members_of_many(session_ids, force=False):
+    """批量查成员。返回 ({会话id: [成员]}, {会话id: err}, err)。
+
+    ⚠️ 存在的理由是 force：members_of(g, True) 每调一次就把**整份群列表**重拉一遍
+    (156 个群 = 2 页)，前端按群逐个调的话 10 个群就是 20 次上游请求。
+    批量后无论多少个群都只刷一次，所以前端那边也就不需要再限制群数了。
+    """
+    idx, err = _room_index(force)
+    out, errs = {}, {}
+    for sid in session_ids:
+        lst, e = _members_of(sid, idx)
+        out[str(sid)] = lst
+        if e:
+            errs[str(sid)] = e
+    return out, errs, err
 
 
 def _private_peer_id(sid, self_id=""):
@@ -1599,6 +1693,12 @@ class Handler(BaseHTTPRequestHandler):
 
         if p == "/gw/members":
             b = self._read_json()
+            gids = b.get("group_ids")
+            if isinstance(gids, list):        # 批量：{map:{群id:[成员]}, errors:{群id:原因}}
+                mp, errs, err = members_of_many(
+                    [str(x) for x in gids if x], bool(b.get("refresh")))
+                return self._send_json({"map": mp, "errors": errs, "error": err,
+                                        "cached": not b.get("refresh")})
             lst, err = members_of(str(b.get("group_id") or ""), bool(b.get("refresh")))
             return self._send_json({"list": lst, "cached": not b.get("refresh"),
                                     "error": err})
@@ -1667,8 +1767,16 @@ class Handler(BaseHTTPRequestHandler):
             err = ge or ce
             return self._send_json({"ok": bool(gl or cl) or not err,
                                     "groups": len(gl), "friends": len(cl),
+                                    # 只算不改，要不要改由前端问过用户再调下面那个
+                                    "migratable": sender_id_migration(cl),
                                     "unpaired": sum(1 for x in gl + cl if not x["paired"]),
                                     "error": err})
+
+        if p == "/gw/migrate-senders":    # 用户确认后才真改 workflows.json
+            cl, ce = contacts_for_picker()
+            plan = sender_id_migration(cl, apply=True)
+            return self._send_json({"ok": True, "migrated": len(plan),
+                                    "plan": plan, "error": ce})
 
         if p == "/gw/test-webhook":
             ok, err = push_webhook("🔔 vworkApi 网关 webhook 测试消息\n时间：%s"
