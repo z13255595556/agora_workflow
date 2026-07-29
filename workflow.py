@@ -796,6 +796,11 @@ class WorkflowEngine:
         """
         sid  = ctx.get("source") or ""
         peer = str(msg.get("sender") or "")
+        # @ 用的是**企微那套**人 id(external_contact_id = imContactId = wxid)，
+        # 不是推送的 user_id —— 后者(32位hex)实测被语聚拒了，回 503。
+        # 上下文的键仍然用 peer：它每条推送都有，external_contact_id 不一定。
+        ment_id = str(((msg.get("jjy") or {}).get("addition") or {})
+                      .get("external_contact_id") or "") or peer
         if not sid:
             return {"action": "ai", "ok": False,
                     "detail": "没有来源会话（定时工作流用不了 AI 回复）"}
@@ -883,9 +888,9 @@ class WorkflowEngine:
         # 不影响这条回复发出去。
         ment, qid = None, ""
         if sid.startswith("R:"):
-            if a.get("mention") and peer:
-                text = "@%s %s" % (ctx.get("sender_name") or peer, text)
-                ment = [peer]
+            if a.get("mention") and ment_id:
+                text = "@%s %s" % (ctx.get("sender_name") or ment_id, text)
+                ment = [ment_id]
             if a.get("quote"):
                 qid = str(msg.get("msg_id") or "")
         if len(text) > MAX_REPLY_LEN:
