@@ -987,9 +987,9 @@ $('#dBody').addEventListener('change',e=>{
   if(!M)return;
   const box=e.target.closest('.msel');
   if(box||e.target.closest('.chips,#mtBox')||e.target.id==='fRegex') paintSum();
-  // 改了「指定会话」且当前是仅群聊 -> 重算群成员候选(命中缓存则不发请求)。
+  // 改了「指定会话」-> 重算发送人候选(命中缓存则不发请求)。
   // 只认 tSess：否则点选发送人自己也会重绘列表，选着的人会跳位。
-  if(box&&box.dataset.key==='tSess'&&M.trigger.chat_type==='group') syncSenderList(false);});
+  if(box&&box.dataset.key==='tSess') syncSenderList(false);});
 $('#dBody').addEventListener('keyup',e=>{if(M&&e.target.id==='fRegex')paintSum();});
 
 function crow(id,title,hintHtml,bodyHtml,open,icon){
@@ -1082,7 +1082,6 @@ function renderEditor(){
      <div style="display:flex;gap:8px;margin-bottom:8px;align-items:center;flex-wrap:wrap">
        <button class="btn sm" id="btnRefreshMem" title="重新向企微拉取，更新缓存">
          <svg><use href="#i-sync"/></svg>刷新群成员</button>
-       <button class="btn sm" id="btnAllContact">显示所有联系人</button>
        <span style="font-size:11.5px;color:var(--text-3)" id="memHint"></span></div>
      ${mselHTML('tSender',senderItems(t),t.senders)}`,t.senders.length>0,'i-users')}
   ${crow('cUt','用户类型',hUt,`
@@ -1206,8 +1205,7 @@ function renderEditor(){
   ['fSchTime','fSchDate','fSchText'].forEach(id=>{
     const el=$('#'+id); if(el) el.onchange=()=>{paintSum();paintNext();};});
   paintNext();
-  // 会话类型决定「指定发送人」列什么：仅群聊→只列群成员，仅私聊→只列联系人
-  bindSeg('segCh',v=>{M.trigger.chat_type=v;paintSum();syncSenderList(false);});
+  bindSeg('segCh',v=>{M.trigger.chat_type=v;paintSum();});
   bindSeg('segUt',v=>{M.trigger.sender_type=v;paintSum();});
   bindSeg('segAt',v=>{M.trigger.at_me=v;paintSum();});
   bindSeg('segCt',v=>{M.trigger.content.mode=v;
@@ -1218,10 +1216,9 @@ function renderEditor(){
   $('#btnAddHttp').onclick=()=>{collectActions();M.actions.push({type:'http',method:'GET',url:'',headers:'',body:'',
     timeout_sec:10,retries:1,reply:true,reply_path:'',reply_template:'{result}',reply_to:[]});renderActions();};
   $('#btnRefreshMem').onclick=()=>syncSenderList(true);   // 只有这个按钮会真的重拉群列表
-  $('#btnAllContact').onclick=showAllContacts;
   $('#btnRunTest').onclick=runTest;
   renderActions();
-  syncSenderList(false);        // 打开编辑器时按当前会话类型自动准备候选(走缓存)
+  syncSenderList(false);        // 打开编辑器时准备候选(走缓存，不发请求)
 }
 function bindSeg(id,fn){
   const seg=document.getElementById(id); if(!seg)return;
@@ -1265,11 +1262,22 @@ function keepSel(st,items){
   st.sel.forEach(id=>{if(!out.some(x=>x.id===id)) out.push({id,name:id,tag:'手动'});});
   return out;
 }
-// 首次渲染用的初始候选(同步，只读缓存，不发请求)
+// 联系人并进群成员，按人 id 去重（两边本来就是同一个 id 空间）。
+// 同一个人以通讯录的名字/身份为准 —— 群里挂的可能是"十点半睡"这种群昵称，
+// 但「在哪个群」的标注要留着。
+function mergeContacts(items){
+  const cmap=new Map(CONTACT_ITEMS().map(c=>[c.id,c]));
+  const out=items.map(m=>{const c=cmap.get(m.id);return c?{...m,name:c.name,tag:c.tag}:m;});
+  const seen=new Set(out.map(x=>x.id));
+  cmap.forEach((c,id)=>{if(!seen.has(id)) out.push(c);});
+  return out;
+}
+// 首次渲染用的初始候选(同步，只读缓存，不发请求)。
+// ⚠️ 不按会话类型切换候选：人 id 统一之后没有理由切，而且联系人接口 835 人
+// 全是 coworker、**一个外部客户都没有** —— 外部客户只存在于群成员里(735 人中
+// 549 个是外部微信用户)。按会话类型切等于把他们挡在门外。
 function senderItems(t){
-  const ct=t.chat_type||'any';
-  if(ct!=='group') return CONTACT_ITEMS();
-  return memberItems((t.sessions||[]).filter(x=>x.startsWith('R:')));
+  return mergeContacts(memberItems((t.sessions||[]).filter(x=>x.startsWith('R:'))));
 }
 // 只在缺缓存时请求后端；force=true 才让后端跳过缓存重拉群列表。
 // 一次把所有群打包发出去 —— 按群逐个请求的话，force 时后端每个群都会把整份
@@ -1289,43 +1297,24 @@ async function fetchMembers(gids,force){
 }
 async function syncSenderList(force){
   const st=MSEL.tSender; if(!M||!st)return;
-  const ct=M.trigger.chat_type||'any';
   const hint=$('#memHint');
-  if(ct==='group'){
-    const gids=mselGet('tSess').filter(x=>x.startsWith('R:'));
-    if(!gids.length){
-      st.items=keepSel(st,[]);
-      if(hint)hint.textContent='仅群聊：请先在「指定会话」勾选群，才能列出群成员';
-    }else{
-      const need=force?gids:gids.filter(g=>!MEMCACHE[g]);
-      if(need.length) await fetchMembers(need,force);
-      const items=memberItems(gids);
-      st.items=keepSel(st,items);
-      // 覆盖数按**真拿到成员**的群算。以前这里报的是勾了几个群，而实际只拉前 10 个，
-      // 看起来是全的
-      const got=gids.filter(g=>(MEMCACHE[g]||[]).length).length;
-      if(hint)hint.textContent=`仅群聊：${got}/${gids.length} 个群，共 ${items.length} 名成员`
-        +(got<gids.length?'（其余群拿不到成员，见控制台）':'')
-        +(force?'（已刷新）':(need.length?'':'（缓存）'));
-      if(force) toast(`已刷新 ${items.length} 名群成员`);
-    }
-  }else if(ct==='private'){
-    st.items=keepSel(st,CONTACT_ITEMS());
-    if(hint)hint.textContent=`仅私聊：只列联系人（${CONTACTS.length} 人）`;
-  }else{
-    st.items=keepSel(st,CONTACT_ITEMS());
-    if(hint)hint.textContent='不限会话类型：列出联系人；要选群成员可把「会话类型」设为仅群聊';
-  }
+  const gids=mselGet('tSess').filter(x=>x.startsWith('R:'));
+  const need=force?gids:gids.filter(g=>!MEMCACHE[g]);
+  if(need.length) await fetchMembers(need,force);
+  const mem=memberItems(gids);
+  st.items=keepSel(st,mergeContacts(mem));
+  // 覆盖数按**真拿到成员**的群算。以前这里报的是勾了几个群，而实际只拉前 10 个，
+  // 看起来是全的
+  const got=gids.filter(g=>(MEMCACHE[g]||[]).length).length;
+  if(hint)hint.textContent=`联系人 ${CONTACTS.length} 人`+(gids.length
+    ? ` + ${got}/${gids.length} 个群共 ${mem.length} 名成员`
+      +(got<gids.length?'（其余群拿不到成员，见控制台）':'')
+      +(force?'（已刷新）':(need.length?'':'（缓存）'))
+    : ' · 外部客户只在群成员里，去「指定会话」勾几个群就能一起列出来');
+  if(force) toast(`已刷新 ${mem.length} 名群成员`);
   st.q='';
   const sq=document.querySelector('.msel[data-key="tSender"] .msq'); if(sq) sq.value='';
   mselPaint('tSender');
-}
-function showAllContacts(){
-  const st=MSEL.tSender; if(!st)return;
-  st.items=keepSel(st,CONTACT_ITEMS()); st.q='';
-  const sq=document.querySelector('.msel[data-key="tSender"] .msq'); if(sq) sq.value='';
-  mselPaint('tSender');
-  const hint=$('#memHint'); if(hint)hint.textContent=`已切到全部联系人（${CONTACTS.length} 人）`;
 }
 
 // ---- 动作渲染 ----
