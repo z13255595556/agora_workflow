@@ -196,6 +196,29 @@ class Store:
             self._db.commit()
         return prev
 
+    def siblings(self, session_id):
+        """同一身份下的全部会话行 id（含自己，按 rowid 升序）。
+
+        chat_id 漂移过的会话在库里是多行，但对用户来说那就是同一个人/同一个群 ——
+        取消息、清未读、列会话都得把它们当成一个，否则历史看起来凭空断了。
+        """
+        sid = str(session_id or "")
+        if not sid:
+            return []
+        with self._lock:
+            r = self._db.execute(
+                "SELECT room_id, peer_uid FROM sessions WHERE id=?", (sid,)).fetchone()
+            if not r:
+                return [sid]
+            col, val = ("room_id", r["room_id"]) if r["room_id"] \
+                else ("peer_uid", r["peer_uid"])
+            if not val:                      # 非企微渠道没有身份，只能就是它自己
+                return [sid]
+            rows = self._db.execute(
+                "SELECT id FROM sessions WHERE %s=? ORDER BY rowid ASC" % col,
+                (val,)).fetchall()
+        return [x["id"] for x in rows] or [sid]
+
     def latest_by_identity(self, room_id="", peer_uid=""):
         """按身份取**当前**可寻址的会话 id。取不到返回 ""。
 
@@ -291,6 +314,14 @@ class Store:
             item = self._msg_dict(self._db.execute(
                 "SELECT * FROM messages WHERE seq=?", (seq,)).fetchone())
             sess = self.get_session(session_id)
+            # 这个会话漂移过的话，未读要按折叠后的算 —— 否则 SSE 推的角标和
+            # 会话列表(get_sessions 已折叠)对不上，看着像丢了几条未读。
+            ids = self.siblings(session_id)
+            if sess and len(ids) > 1:
+                row = self._db.execute(
+                    "SELECT SUM(unread) u FROM sessions WHERE id IN (%s)"
+                    % ",".join("?" * len(ids)), ids).fetchone()
+                sess["unread"] = int(row["u"] or 0)
         return item, sess
 
     def revoke_message(self, msg_id, session_id=None):
@@ -332,9 +363,12 @@ class Store:
         return item, sess
 
     def mark_read(self, session_id):
+        """清未读。漂移裂开的会话在界面上是一条，未读也得一起清。"""
+        ids = self.siblings(session_id) or [session_id]
         with self._lock:
             self._db.execute(
-                "UPDATE sessions SET unread=0 WHERE id=?", (session_id,))
+                "UPDATE sessions SET unread=0 WHERE id IN (%s)"
+                % ",".join("?" * len(ids)), ids)
             self._db.commit()
 
     def update_names(self, name_map):
@@ -360,24 +394,29 @@ class Store:
           * 默认取最新 limit 条(打开会话)
           * before=seq  取更早的一页(向上翻历史)，has_more 指是否还有更早
           * after=seq   取更新的消息(断线重连补差)，has_more 指是否还有更新
+
+        chat_id 漂移过的会话在库里是多行，这里一并取 —— seq 是**全局**自增游标，
+        所以跨会话行按 seq 排出来天然就是时间序，翻页逻辑一个字都不用改。
         """
         limit = max(1, min(int(limit or 50), 200))
+        ids = self.siblings(session_id) or [session_id]
+        ph  = ",".join("?" * len(ids))
         with self._lock:
             if after is not None:
                 rows = self._db.execute(
-                    "SELECT * FROM messages WHERE session_id=? AND seq>?"
-                    " ORDER BY seq ASC LIMIT ?",
-                    (session_id, int(after), limit + 1)).fetchall()
+                    "SELECT * FROM messages WHERE session_id IN (%s) AND seq>?"
+                    " ORDER BY seq ASC LIMIT ?" % ph,
+                    ids + [int(after), limit + 1]).fetchall()
                 has_more = len(rows) > limit
                 rows = rows[:limit]
             else:
-                cond, args = "", [session_id]
+                cond, args = "", list(ids)
                 if before is not None:
                     cond = " AND seq<?"
                     args.append(int(before))
                 args.append(limit + 1)
                 rows = self._db.execute(
-                    "SELECT * FROM messages WHERE session_id=?" + cond +
+                    "SELECT * FROM messages WHERE session_id IN (%s)" % ph + cond +
                     " ORDER BY seq DESC LIMIT ?", args).fetchall()
                 has_more = len(rows) > limit
                 rows = list(reversed(rows[:limit]))
@@ -394,10 +433,32 @@ class Store:
         return out, has_more
 
     def get_sessions(self):
+        """会话列表。**按身份折叠** —— chat_id 漂移过的会话在库里是多行，但对用户
+        来说那就是同一个人/同一个群，工作台不该看见两条同名会话。
+
+        代表行取最后建出来的那个(= 当前地址，发消息认它)；未读求和；预览取最后
+        活跃的那行。没有身份的(非企微渠道)各算各的。
+        """
         with self._lock:
             rows = self._db.execute(
-                "SELECT * FROM sessions ORDER BY last_time DESC").fetchall()
-        return [self._sess_dict(r) for r in rows]
+                "SELECT * FROM sessions ORDER BY rowid ASC").fetchall()
+        out, idx = [], {}
+        for r in rows:
+            d = self._sess_dict(r)
+            key = ("R", d["room_id"]) if d["room_id"] else (
+                  ("S", d["peer_uid"]) if d["peer_uid"] else ("", d["id"]))
+            i = idx.get(key)
+            if i is None:
+                idx[key] = len(out)
+                out.append(d)
+                continue
+            prev = out[i]
+            d["unread"] = prev["unread"] + d["unread"]
+            if prev["last_time"] > d["last_time"]:      # 旧行反而更活跃就用旧行的预览
+                d["last_time"], d["last_msg"] = prev["last_time"], prev["last_msg"]
+            out[i] = d                                   # rowid 升序，所以 d 是更新的那行
+        out.sort(key=lambda x: x["last_time"], reverse=True)
+        return out
 
     def get_session(self, session_id):
         with self._lock:
