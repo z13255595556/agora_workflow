@@ -611,7 +611,7 @@ class WorkflowEngine:
         """执行一条工作流的所有动作。返回 results 列表。dry=True 时转发/回复只预览不发送。"""
         ctx = self._ctx(msg)
         results = []
-        for a in wf.get("actions") or []:
+        for idx, a in enumerate(wf.get("actions") or []):
             try:
                 if a.get("type") == "reply":
                     results.append(self._do_reply(a, ctx, dry))
@@ -624,8 +624,8 @@ class WorkflowEngine:
                         results.append(self._do_http(a, ctx, msg, dry))
                 elif a.get("type") == "ai":
                     # AI 回复真调模型是要花钱的，所以试跑一律只拼请求体不发出去
-                    results.append(self._do_ai(a, ctx, msg, wf, dry=True)
-                                   if dry else self._do_ai(a, ctx, msg, wf))
+                    results.append(self._do_ai(a, ctx, msg, wf, idx, dry=True)
+                                   if dry else self._do_ai(a, ctx, msg, wf, idx))
             except Exception as e:
                 results.append({"action": a.get("type") or "?", "ok": False,
                                 "detail": "异常: %s" % e})
@@ -787,7 +787,7 @@ class WorkflowEngine:
     # ============ AI 回复 ============
     DASHSCOPE_URL = "https://dashscope.aliyuncs.com/api/v1/apps/%s/completion"
 
-    def _do_ai(self, a, ctx, msg, wf, dry=False):
+    def _do_ai(self, a, ctx, msg, wf, idx=0, dry=False):
         """带上下文调模型，把回答发回来源会话。
 
         和「调用接口」的区别只有一个：请求体不用你写，引擎按这个人和机器人
@@ -795,7 +795,6 @@ class WorkflowEngine:
         (工作流, 会话, 人) —— 群里两个人同时 @ 机器人，各聊各的。
         """
         sid  = ctx.get("source") or ""
-        peer = str(msg.get("sender") or "")
         # @ 用的是**企微那套**人 id(external_contact_id = imContactId = wxid)。
         # 实测(直接打语聚发送接口)：
         #   ["1688851163628036"]  external_contact_id 数组 -> Code 2000 ✅
@@ -805,9 +804,13 @@ class WorkflowEngine:
         # 那句 "is not in the room" 说明语聚是拿 id 去群成员表里查的 —— 所以
         # 拿不到 external_contact_id 时**不要**退回 user_id，那是必然失败的一次
         # 白往返；正文前缀照样加，只是没有真 @ 的红点。
-        # 上下文的键仍然用 peer(user_id)：它每条推送都有，键必须永远拿得到。
         ment_id = str(((msg.get("jjy") or {}).get("addition") or {})
                       .get("external_contact_id") or "")
+        # 上下文的键：user_id 优先(每条推送都有)，缺了退到 external_contact_id。
+        # 两个都没有就是 peer="" —— 那样同一个群里所有人会挤进同一份上下文，
+        # A 问的话 B 下一轮就读到了(实测过)。所以这种情况**整个不碰上下文**，
+        # 当成一次性问答，宁可没记忆也不能串台。
+        peer = str(msg.get("sender") or "") or ment_id
         if not sid:
             return {"action": "ai", "ok": False,
                     "detail": "没有来源会话（定时工作流用不了 AI 回复）"}
@@ -815,14 +818,22 @@ class WorkflowEngine:
         if not ask:
             return {"action": "ai", "ok": False, "detail": "触发消息没有文本内容"}
 
+        # 一条工作流里可以挂多个 AI 动作(比如一个答技术一个答商务)，它们的
+        # 提示词和模型都不一样，共用一份上下文就是串台：第二个会把第一个的
+        # 回答当成自己说过的话。所以键带上动作序号。
+        # 第 0 个仍然用裸 wf_id —— 绝大多数工作流只有一个 AI 动作，这样已经
+        # 存下来的上下文不会因为这次改动全部作废。
+        ck = wf.get("id") or ""
+        if idx:
+            ck = "%s#%d" % (ck, idx)
+
         # ---- 上下文：历史 + 当前这句。历史读失败就按第一轮处理，不让它挡着回话 ----
         hist = []
-        if self.store:
+        if self.store and peer:
             try:
                 hist = self.store.ai_ctx_read(
-                    wf.get("id") or "", sid, peer,
-                    mode=a.get("ctx_mode"), count=a.get("ctx_count"),
-                    minutes=a.get("ctx_minutes"))
+                    ck, sid, peer, mode=a.get("ctx_mode"),
+                    count=a.get("ctx_count"), minutes=a.get("ctx_minutes"))
             except Exception as e:
                 self.log.warning("读取 AI 上下文失败，这轮按无上下文处理: %s", e)
         messages = hist + [{"role": "user", "content": ask}]
@@ -908,9 +919,9 @@ class WorkflowEngine:
 
         # 发出去了才落库。模型答了但没发成也不写 —— 对方根本没看见这句，
         # 记进上下文只会让下一轮基于一段从未发生过的对话往下编。
-        if self.store:
+        if self.store and peer:
             try:
-                self.store.ai_ctx_append(wf.get("id") or "", sid, peer,
+                self.store.ai_ctx_append(ck, sid, peer,
                                          [("user", ask), ("assistant", result)])
             except Exception as e:
                 self.log.warning("AI 上下文落库失败(这轮不影响回复): %s", e)
