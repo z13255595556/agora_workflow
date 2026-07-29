@@ -175,6 +175,7 @@ MEMBER_LIST  = {}                      # {group_id: [{id,name}]} 成员列表缓
 NAME_MAP    = {}                       # {id: name}  群/好友/成员 id->显示名
 CONTACT_TYPE = {}                      # {user_id: True=外部 / False=内部}  同步通讯录时填充
 ROOM_LINKED = {}                       # {sid: (sid,room_id,bot_id)} 已落库的映射, 免得每条消息都 UPDATE
+PEER_LINKED = {}                       # {sid: external_contact_id} 同上, 私聊那侧
 STATS = {
     "started_at": time.time(),
     "received": 0,       # 收到的聊天消息数(本次启动以来)
@@ -400,6 +401,35 @@ def _jjy_call(path, body=None, api_key="", meta=None, throttle=False, **params):
                   or "语聚返回 Code=%s" % j.get("Code"))
 
 
+def _warn_drift(what, sid, prev):
+    """身份被新会话行接管 = 聚合 chat_id 变过。喊一声，否则它是无声的 ——
+    历史留在旧会话行里，工作台看着像凭空多出来一个同名会话。"""
+    if prev:
+        log.warning("%s 的会话 id 变了: %s -> %s（历史留在旧会话行，"
+                    "发送和匹配都会自动走新的）", what, "、".join(prev), sid)
+
+
+def resolve_target(target):
+    """发送目标 -> **当前**可寻址的会话 id。
+
+    收两种形态：
+      R:/S: + 聚合 chat_id   本地会话 id（工作台、回复、转发目标都是它）
+      纯数字                 「人」的 id(external_contact_id)，选人面板给的
+    聚合 chat_id 是地址不是身份、会变，所以第一种也要过一次库：拿这行会话的
+    身份(imRoomId / peer_uid)去取最新那行。查不到就原样返回，不在这儿拦。
+    """
+    t = str(target or "")
+    if not (t and STORE):
+        return t
+    if t[:2] in ("R:", "S:"):
+        sess = STORE.get_session(t)
+        if not sess:            # 本地没这行：多半是群列表点进来的 imRoomId
+            return STORE.latest_by_identity(room_id=t) or t
+        return STORE.latest_by_identity(room_id=sess.get("room_id") or "",
+                                        peer_uid=sess.get("peer_uid") or "") or t
+    return STORE.latest_by_identity(peer_uid=t) or t
+
+
 def jjy_send(conversation_id, message_type, message_content, meta=None, api_key=""):
     """调语聚「发送/回复聚合对话消息」。返回 (ok, err)。
 
@@ -424,9 +454,15 @@ def jjy_send(conversation_id, message_type, message_content, meta=None, api_key=
     key = (api_key or cfg.get("api_key") or "").strip()
     if not key:
         return False, "未配置语聚 apiKey（管理后台 → 系统设置 → 语聚接入）"
-    chat_id = jjy.raw_chat_id(conversation_id)
+    target  = resolve_target(conversation_id)
+    chat_id = jjy.raw_chat_id(target)
     if not chat_id:
         return False, "会话 id 为空"
+    if target.isdigit():
+        # 纯数字 = 「人」的 id，而且没能换成会话 id：这个人还没给托管账号发过
+        # 消息。语聚对不认识的 chat_id 回的是 5xx，会触发重试白等几秒才失败，
+        # 不如在这儿直接说清楚。
+        return False, "这个人还没来过消息，拿不到会话 id（语聚只能回复已存在的会话）"
 
     base = (cfg.get("api_base") or "https://chat.jijyun.cn").rstrip("/")
     # apiKey 在 query string 里 —— 下面任何一条日志都不许带 url
@@ -531,6 +567,10 @@ def send_text_ex(conversation_id, msg, quote_id="", mention=None):
     if mention:
         mc["mention"] = [str(x) for x in mention]
 
+    # 先把目标解析成当前会话 id：入参可能是「人」的 id，也可能是 chat_id 漂移前
+    # 的旧会话 id。下面留档和日志都得用解析后的，否则自己发的消息会记到旧会话行上。
+    # jjy_send 里还会再解析一次(幂等)，那是给其它调用方兜底的。
+    conversation_id = resolve_target(conversation_id)
     ok, err = jjy_send(conversation_id, 2, mc)
     with _lock:
         if ok:
@@ -1317,8 +1357,11 @@ def jjy_worker():
                     CONTACT_TYPE[msg["sender"]] = bool(msg["sender_external"])
             _capture_jjy_raw(body, msg)
             on_message(msg)
-            # 群管理接口那套 id 只在推送里出现，见到就落一次库(值没变的不写)。
+            # 会话的**身份**只在推送里出现，见到就落一次库(值没变的不写)。
             # 必须放在 on_message 之后 —— 会话行是那时候才建出来的。
+            # 群的身份是 imRoomId，私聊的身份是对端「人」的 id；会话行的主键
+            # (聚合 chat_id)是**地址**，会变，身份不会 —— 详见 store.py 的
+            # 「身份 ↔ 地址」一节。
             jy = msg.get("jjy") or {}
             if jy.get("room_id") and STORE:
                 key = (sid, jy["room_id"], jy.get("bot_id") or "")
@@ -1327,7 +1370,18 @@ def jjy_worker():
                     if not known:
                         ROOM_LINKED[sid] = key
                 if not known:
-                    STORE.link_room(sid, jy["room_id"], jy.get("bot_id") or "")
+                    _warn_drift("群 " + (jy.get("room_id") or ""), sid,
+                                STORE.link_room(sid, jy["room_id"],
+                                                jy.get("bot_id") or ""))
+            # 私聊：对端就是发送人。自己发的那条对端是机器人自己，跳过。
+            peer = str((jy.get("addition") or {}).get("external_contact_id") or "")
+            if peer and STORE and sid.startswith("S:") and not msg.get("is_self_msg"):
+                with _lock:
+                    known = PEER_LINKED.get(sid) == peer
+                    if not known:
+                        PEER_LINKED[sid] = peer
+                if not known:
+                    _warn_drift("联系人 " + peer, sid, STORE.link_peer(sid, peer))
         except Exception as e:
             log.exception("语聚报文处理异常: %s", e)
         finally:

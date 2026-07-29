@@ -146,22 +146,74 @@ class Store:
         # source_addition.room_id 能把它们对上 —— 所以见到一次就得存下来，
         # 否则重启后拿群列表接口的返回没法映射回本地会话。
         scols = {r["name"] for r in self._db.execute("PRAGMA table_info(sessions)")}
-        for name, decl in (("room_id", "TEXT NOT NULL DEFAULT ''"),   # = imRoomId
-                           ("bot_id",  "TEXT NOT NULL DEFAULT ''")):  # = imBotId
+        for name, decl in (("room_id",  "TEXT NOT NULL DEFAULT ''"),  # = imRoomId
+                           ("bot_id",   "TEXT NOT NULL DEFAULT ''"),  # = imBotId
+                           # 私聊的身份，和群的 room_id 对称，见 link_peer()
+                           ("peer_uid", "TEXT NOT NULL DEFAULT ''")):
             if name not in scols:
                 self._db.execute(
                     "ALTER TABLE sessions ADD COLUMN %s %s" % (name, decl))
 
+    # ---------- 身份 ↔ 地址 ----------
+    # 聚合对话的 chat_id 是**地址**不是身份：会话行拿它当主键，它一变就是新的一行，
+    # 历史留在旧行里。真正不变的身份在企微那套 id 上 —— 群是 imRoomId，私聊是
+    # 「人」的 id(external_contact_id)。把身份也存下来，就能做两件事：
+    #   1) 发消息时按身份取**当前**那行，chat_id 漂移了自动跟上
+    #   2) 漂移发生时能被发现(同一个身份挂在多行上)，而不是悄悄裂成两个会话
+
     def link_room(self, session_id, room_id, bot_id=""):
-        """记下会话对应的企微 imRoomId / imBotId。只在值有变化时写。"""
+        """记下会话对应的企微 imRoomId / imBotId。只在值有变化时写。
+
+        返回被顶替的旧会话 id 列表 —— 非空就说明这个群的 chat_id 变过。
+        """
         if not (session_id and room_id):
-            return
+            return []
         with self._lock:
+            prev = [r["id"] for r in self._db.execute(
+                "SELECT id FROM sessions WHERE room_id=? AND id!=?",
+                (room_id, session_id)).fetchall()]
             self._db.execute(
                 "UPDATE sessions SET room_id=?, bot_id=? WHERE id=?"
                 " AND (room_id!=? OR bot_id!=?)",
                 (room_id, bot_id or "", session_id, room_id, bot_id or ""))
             self._db.commit()
+        return prev
+
+    def link_peer(self, session_id, peer_uid):
+        """记下私聊会话对端「人」的 id(external_contact_id)。和 link_room 一个模子。
+
+        返回被顶替的旧会话 id 列表 —— 非空就说明这个人的 chat_id 变过。
+        """
+        if not (session_id and peer_uid):
+            return []
+        with self._lock:
+            prev = [r["id"] for r in self._db.execute(
+                "SELECT id FROM sessions WHERE peer_uid=? AND id!=?",
+                (peer_uid, session_id)).fetchall()]
+            self._db.execute(
+                "UPDATE sessions SET peer_uid=? WHERE id=? AND peer_uid!=?",
+                (peer_uid, session_id, peer_uid))
+            self._db.commit()
+        return prev
+
+    def latest_by_identity(self, room_id="", peer_uid=""):
+        """按身份取**当前**可寻址的会话 id。取不到返回 ""。
+
+        同一个身份可能挂着多行(chat_id 漂移过)，取**最后建出来**的那行。
+
+        ⚠️ 按 rowid 而不是 last_time：last_time 是"最后活跃时间"，往旧会话发
+        一条就能把它顶成最新，于是解析又flip回那个已经作废的会话。会话行的
+        创建顺序才是地址的新旧顺序，而且它不会被任何后续活动改写。
+        (rowid 只在 VACUUM 时重编号，且重编号保持相对顺序；本模块不 VACUUM。)
+        """
+        col, val = ("room_id", room_id) if room_id else ("peer_uid", peer_uid)
+        if not val:
+            return ""
+        with self._lock:
+            r = self._db.execute(
+                "SELECT id FROM sessions WHERE %s=?"
+                " ORDER BY rowid DESC LIMIT 1" % col, (val,)).fetchone()
+        return r["id"] if r else ""
 
     def get_by_msg_id(self, session_id, msg_id):
         """按 msg_id 取一条消息。走 (session_id, msg_id) 唯一索引。"""
@@ -174,10 +226,16 @@ class Store:
         return self._msg_dict(r) if r else None
 
     def room_map(self):
-        """{imRoomId: 内部 session_id}。群列表接口的返回靠它映射回本地会话。"""
+        """{imRoomId: 内部 session_id}。群列表接口的返回靠它映射回本地会话。
+
+        chat_id 漂移过的群会有多行挂同一个 imRoomId —— 按 rowid 升序扫，
+        后写覆盖先写，最终留下最后建出来的那行。取"最后建出来"而不是"最后活跃"
+        的理由见 latest_by_identity()。
+        """
         with self._lock:
             rows = self._db.execute(
-                "SELECT id, room_id FROM sessions WHERE room_id!=''").fetchall()
+                "SELECT id, room_id FROM sessions WHERE room_id!=''"
+                " ORDER BY rowid ASC").fetchall()
         return {r["room_id"]: r["id"] for r in rows}
 
     # ---------- 写 ----------
@@ -627,7 +685,8 @@ class Store:
             "id": r["id"], "name": r["name"] or r["id"],
             "is_group": bool(r["is_group"]), "last_msg": r["last_msg"],
             "last_time": r["last_time"], "unread": r["unread"],
-            # 迁移前的老库没有这两列，用 keys() 兜一下
-            "room_id": (r["room_id"] if "room_id" in k else "") or "",
-            "bot_id":  (r["bot_id"]  if "bot_id"  in k else "") or "",
+            # 迁移前的老库没有这几列，用 keys() 兜一下
+            "room_id":  (r["room_id"]  if "room_id"  in k else "") or "",
+            "bot_id":   (r["bot_id"]   if "bot_id"   in k else "") or "",
+            "peer_uid": (r["peer_uid"] if "peer_uid" in k else "") or "",
         }
