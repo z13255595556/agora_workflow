@@ -141,6 +141,35 @@ class Store:
                 self._db.execute(
                     "ALTER TABLE messages ADD COLUMN %s %s" % (name, decl))
 
+        # 群管理接口那套 id。聚合对话的 chat_id 和企微群管理的 imRoomId 是
+        # **两个不同的 id 空间**(UUID 形态 vs "R:10942308524386327")，只有推送里的
+        # source_addition.room_id 能把它们对上 —— 所以见到一次就得存下来，
+        # 否则重启后拿群列表接口的返回没法映射回本地会话。
+        scols = {r["name"] for r in self._db.execute("PRAGMA table_info(sessions)")}
+        for name, decl in (("room_id", "TEXT NOT NULL DEFAULT ''"),   # = imRoomId
+                           ("bot_id",  "TEXT NOT NULL DEFAULT ''")):  # = imBotId
+            if name not in scols:
+                self._db.execute(
+                    "ALTER TABLE sessions ADD COLUMN %s %s" % (name, decl))
+
+    def link_room(self, session_id, room_id, bot_id=""):
+        """记下会话对应的企微 imRoomId / imBotId。只在值有变化时写。"""
+        if not (session_id and room_id):
+            return
+        with self._lock:
+            self._db.execute(
+                "UPDATE sessions SET room_id=?, bot_id=? WHERE id=?"
+                " AND (room_id!=? OR bot_id!=?)",
+                (room_id, bot_id or "", session_id, room_id, bot_id or ""))
+            self._db.commit()
+
+    def room_map(self):
+        """{imRoomId: 内部 session_id}。群列表接口的返回靠它映射回本地会话。"""
+        with self._lock:
+            rows = self._db.execute(
+                "SELECT id, room_id FROM sessions WHERE room_id!=''").fetchall()
+        return {r["room_id"]: r["id"] for r in rows}
+
     # ---------- 写 ----------
     def add_message(self, session_id, msg_id, sender, sender_name, content,
                     msg_type, is_self, ts, is_group, session_name, preview,
@@ -583,8 +612,12 @@ class Store:
 
     @staticmethod
     def _sess_dict(r):
+        k = r.keys()
         return {
             "id": r["id"], "name": r["name"] or r["id"],
             "is_group": bool(r["is_group"]), "last_msg": r["last_msg"],
             "last_time": r["last_time"], "unread": r["unread"],
+            # 迁移前的老库没有这两列，用 keys() 兜一下
+            "room_id": (r["room_id"] if "room_id" in k else "") or "",
+            "bot_id":  (r["bot_id"]  if "bot_id"  in k else "") or "",
         }

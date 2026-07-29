@@ -74,6 +74,11 @@ DEFAULT_CONFIG = {
         #    都不能带完整 url；/gw/config 返回给前端时也做了打码, 见 _public_config()。
         "api_base": "https://chat.jijyun.cn",
         "api_key": "",
+        # 语聚的接口分两套 base path, 文档里对 apiKey 的说法也不一样:
+        #   /v1/openapi/...            "应用助手集成配置页面获取"   -> api_key
+        #   /v1/api/ai/marketing/...   "语聚AI的API接口页面获取"    -> api_key_mkt
+        # 是不是同一个 key 官方没说清。留空则回退用 api_key —— 真是同一个就不用填。
+        "api_key_mkt": "",
         "send_qps": 1,                    # 全局发送速率(条/秒)。语聚的 429 文案是
                                           # "Too Many Requests in one second", 按秒限流
         "send_retry": 2,                  # 429/5xx/网络错误的重试次数(业务失败不重试)
@@ -98,7 +103,7 @@ DEFAULT_CONFIG = {
         # 媒体保留天数, 0=不清理。**仅 download 模式生效** ——
         # link 模式下没有本地文件可回收, 删记录只会把链接弄丢。
         "keep_days": 3,
-        "workers": 2,                     # 下载线程数。直连 HTTP, 可以比 DLL 时代开大点
+        "workers": 2,                     # 下载线程数。直连 HTTP, 可以开大点            
         "max_tries": 3
     },
     "health": {
@@ -166,9 +171,10 @@ _lock       = threading.RLock()
 CONFIG      = {}
 LOGS        = deque(maxlen=500)        # 供后台"状态监控"查看
 MEMBER_CACHE = {}                      # {group_id: {user_id: name}} 转发时解析昵称
-MEMBER_LIST  = {}                      # {group_id: [{id,name}]} 成员列表缓存(选人面板用，避免每次打 DLL)
+MEMBER_LIST  = {}                      # {group_id: [{id,name}]} 成员列表缓存(选人面板用)
 NAME_MAP    = {}                       # {id: name}  群/好友/成员 id->显示名
 CONTACT_TYPE = {}                      # {user_id: True=外部 / False=内部}  同步通讯录时填充
+ROOM_LINKED = {}                       # {sid: (sid,room_id,bot_id)} 已落库的映射, 免得每条消息都 UPDATE
 STATS = {
     "started_at": time.time(),
     "received": 0,       # 收到的聊天消息数(本次启动以来)
@@ -302,13 +308,16 @@ def save_config():
 # 前端回填时用的占位符。管理页虽然在鉴权后面，但 apiKey 是能替别人发消息的凭证，
 # 和 company_id 不是一个量级 —— 不往浏览器里吐原文。
 API_KEY_MASK = "********"
+SECRET_KEYS  = ("api_key", "api_key_mkt")
 
 def _public_config():
     """给前端看的配置：apiKey 打码，其余原样。"""
     c = json.loads(json.dumps(CONFIG))       # 深拷贝, 别改到全局
     j = c.get("jjy")
-    if isinstance(j, dict) and j.get("api_key"):
-        j["api_key"] = API_KEY_MASK
+    if isinstance(j, dict):
+        for k in SECRET_KEYS:
+            if j.get(k):
+                j[k] = API_KEY_MASK
     return c
 
 # ============================ 消息源适配 ============================
@@ -333,6 +342,61 @@ def _send_throttle():
         if wait > 0:
             time.sleep(wait)
         _send_next[0] = time.monotonic() + gap
+
+
+def _jjy_url(path, api_key="", **params):
+    """拼语聚接口 URL。apiKey 走 query string 是官方设计 —— 所以调用方
+    **绝对不能把返回值写进日志**，出错只打 path。"""
+    cfg = CONFIG.get("jjy") or {}
+    # /v1/api/ai/marketing/ 那套单独一个 key(留空回退主 key), 见 DEFAULT_CONFIG
+    if not api_key:
+        api_key = ((cfg.get("api_key_mkt") if path.startswith("/v1/api/") else "")
+                   or cfg.get("api_key") or "")
+    base = (cfg.get("api_base") or "https://chat.jijyun.cn").rstrip("/")
+    qs = "".join("&%s=%s" % (k, quote(str(v), safe=""))
+                 for k, v in params.items() if v not in (None, ""))
+    return "%s%s?apiKey=%s%s" % (base, path, quote(api_key.strip(), safe=""), qs)
+
+
+def _jjy_call(path, body=None, api_key="", meta=None, throttle=False, **params):
+    """调语聚接口，返回 (Data, err)。body=None 走 GET，否则 POST JSON。
+
+    统一处理这套接口的三个共性：
+      * 响应字段是**大写开头**的 Code/Data/Msg，成功是 Code==2000
+      * Code=4000 是业务失败，重试没意义
+      * 401/402 有专门的含义，翻成人话
+    只有校验接口 /v1/openapi/check 不守这个约定(直接回 {"success": true})，
+    那个单独处理。
+    """
+    meta = meta if isinstance(meta, dict) else {}
+    cfg = CONFIG.get("jjy") or {}
+    if not (api_key or cfg.get("api_key") or "").strip():
+        return None, "未配置语聚 apiKey（管理后台 → 系统设置 → 出站发送）"
+    url = _jjy_url(path, api_key, **params)
+    data = None if body is None else json.dumps(body, ensure_ascii=False).encode("utf-8")
+    timeout = max(3, int(cfg.get("send_timeout") or 15))
+    # 只有会改状态的调用(撤回)才排队 —— 拉列表要翻几十页, 套上 1 条/秒会慢到没法用
+    if throttle:
+        _send_throttle()
+    try:
+        req = urllib.request.Request(
+            url, data=data, method="GET" if data is None else "POST",
+            headers={"Content-Type": "application/json; charset=utf-8"})
+        with urllib.request.urlopen(req, timeout=timeout) as resp:
+            meta["http"] = resp.status
+            j = json.loads(resp.read().decode("utf-8", "ignore") or "{}")
+    except urllib.error.HTTPError as e:
+        meta["http"] = e.code
+        return None, ("apiKey 无效或已失效（401）" if e.code == 401 else
+                      "语聚资源包不足（402）" if e.code == 402 else "HTTP %s" % e.code)
+    except Exception as e:
+        return None, str(e)
+    meta["code"] = j.get("Code")
+    if j.get("Code") == 2000:
+        return j.get("Data"), ""
+    d = j.get("Data")
+    return None, (j.get("Msg") or (d if isinstance(d, str) else "")
+                  or "语聚返回 Code=%s" % j.get("Code"))
 
 
 def jjy_send(conversation_id, message_type, message_content, meta=None, api_key=""):
@@ -435,6 +499,188 @@ def send_text_ex(conversation_id, msg, quote_id="", mention=None):
 def send_text(conversation_id, msg):
     """工作流引擎约定的发送出口：send_text(sid, text) -> bool。"""
     return send_text_ex(conversation_id, msg)[0]
+
+
+def jjy_revoke(conversation_id, message_id):
+    """撤回一条消息。POST /v1/openapi/aggregate/message/revoke
+
+    ⚠️ 官方只写了「支持小红书、企业微信聚合消息撤回」——别的渠道会返回 4000。
+    文档没写时限，但各家 IM 基本都有(企微 2 分钟)，超时会被语聚那边挡掉。
+    message_id 用的是**推送里带的那个**：发送接口的响应里没有 message_id，
+    所以自己发的消息也得等回声推回来才撤得了。
+    """
+    chat_id = jjy.raw_chat_id(conversation_id)
+    mid = str(message_id or "")
+    if not (chat_id and mid):
+        return False, "缺少会话或消息 id"
+    _, err = _jjy_call("/v1/openapi/aggregate/message/revoke",
+                       {"chat_id": chat_id, "message_id": mid}, throttle=True)
+    if err:
+        log.warning("撤回失败 %s/%s: %s", conversation_id, mid, err)
+    return (not err), err
+
+
+CONTACTS_CACHE = {"at": 0, "list": []}
+CONTACTS_TTL   = 600
+
+def jjy_contacts(force=False):
+    """企微托管账号的联系人列表。GET /v1/api/ai/marketing/contacts/list
+
+    ⚠️ 同样只覆盖**企微代运营**渠道，且返回的 wxid / externalUserId 和聚合对话
+    推送里的 user_id 不是一个 id 空间。好在这个接口返回了 chatId ——
+    那大概率就是聚合对话的会话 id，所以能直接映射(见 paired)。
+    """
+    with _lock:
+        if not force and CONTACTS_CACHE["list"] and \
+           (time.time() - CONTACTS_CACHE["at"]) < CONTACTS_TTL:
+            return list(CONTACTS_CACHE["list"]), ""
+
+    out, page, err = [], 0, ""
+    while page < 20:                      # 20*500=1万人，够了；防翻页不收敛
+        data, e = _jjy_call("/v1/api/ai/marketing/contacts/list",
+                            current=page, pageSize=500)
+        if e:
+            err = e
+            break
+        batch = ((data or {}).get("data") or [])
+        out.extend(x for x in batch if isinstance(x, dict))
+        total = int((((data or {}).get("page") or {}).get("total")) or 0)
+        if len(batch) < 500 or (total and len(out) >= total):
+            break
+        page += 1
+
+    if err and not out:
+        log.warning("拉取企微联系人失败: %s", err)
+        return [], err
+    with _lock:
+        CONTACTS_CACHE.update({"at": time.time(), "list": out})
+    log.info("企微联系人已刷新: %d 人%s", len(out), ("（部分失败: %s）" % err) if err else "")
+    return out, err
+
+
+def contacts_for_picker(force=False):
+    """联系人列表 -> 选人面板形态。id 优先用 chatId(发送接口认的就是它)。"""
+    raw, err = jjy_contacts(force)
+    out = []
+    for c in raw:
+        if c.get("deleted"):
+            continue
+        cid = str(c.get("chatId") or "")
+        out.append({
+            "id": ("S:" + cid) if cid else str(c.get("wxid") or ""),
+            "paired": bool(cid),
+            "name": c.get("alias") or c.get("nickName") or c.get("wxid") or "",
+            # coworker=同公司员工 -> 内部; 其余按外部客户算
+            "is_external": 0 if c.get("coworker") else 1,
+            "avatar": c.get("avatarUrl") or "",
+            "wxid": str(c.get("wxid") or ""),
+            "external_id": str(c.get("externalUserId") or ""),
+            "tags": (c.get("tags") or []) + (c.get("labels") or []),
+        })
+    out.sort(key=lambda x: (not x["paired"], x["name"]))
+    return out, err
+
+
+# ============================ 企微群列表 ============================
+# GET /v1/openapi/wxwork/group/list —— 托管账号所在的企微群，**含群成员**。
+#
+# ⚠️ 两个必须记住的边界：
+#   1) 只覆盖**企微代运营**渠道。抖音/小红书/钉钉/公众号那些聚合对话，
+#      这个接口一个都不返回。
+#   2) 它返回的 imRoomId 形如 "R:10942308524386327"，和聚合对话的 chat_id
+#      (UUID 形态)**不是一个 id 空间**。要映射回本地会话只能靠推送里的
+#      source_addition.room_id —— 也就是说，只有来过消息的群才对得上。
+GROUPS_CACHE = {"at": 0, "list": [], "err": ""}   # {at, list:[群], err}
+GROUPS_TTL   = 600                                # 秒。群列表不会分秒必变
+
+def jjy_group_list(force=False):
+    """拉全量群列表(自动翻页)。返回 (list, err)，list 里每项是接口原样的群对象。"""
+    with _lock:
+        fresh = (time.time() - GROUPS_CACHE["at"]) < GROUPS_TTL
+        if not force and fresh and GROUPS_CACHE["list"]:
+            return list(GROUPS_CACHE["list"]), ""
+
+    out, page, err = [], 0, ""
+    while page < 50:                     # 50*100=5000 个群，够了；防翻页不收敛
+        # current 是**从 0 开始**的页码(文档: "默认为0，即第一页")
+        data, e = _jjy_call("/v1/openapi/wxwork/group/list",
+                            current=page, pageSize=100)
+        if e:
+            err = e
+            break
+        batch = ((data or {}).get("data") or [])
+        out.extend(x for x in batch if isinstance(x, dict))
+        total = int((data or {}).get("total") or 0)
+        if len(batch) < 100 or (total and len(out) >= total):
+            break
+        page += 1
+
+    if err and not out:
+        with _lock:
+            GROUPS_CACHE["err"] = err
+        log.warning("拉取企微群列表失败: %s", err)
+        return [], err
+    with _lock:
+        GROUPS_CACHE.update({"at": time.time(), "list": out, "err": err})
+    log.info("企微群列表已刷新: %d 个群%s", len(out), ("（部分失败: %s）" % err) if err else "")
+    return out, err
+
+
+def groups_for_picker(force=False):
+    """群列表 -> 选人面板用的形态。
+
+    关键在 paired：imRoomId 能映射到本地会话的群，id 用内部 session_id
+    (发送接口认的是聚合对话 chat_id)；映射不上的原样给 imRoomId 并标记
+    paired=False —— 前端置灰不让选，因为那个 id 大概率发不出去。
+    """
+    raw, err = jjy_group_list(force)
+    rmap = STORE.room_map() if STORE else {}
+    out = []
+    for g in raw:
+        rid = str(g.get("imRoomId") or g.get("wecomChatId") or "")
+        sid = rmap.get(rid, "")
+        out.append({
+            "id": sid or rid,
+            "room_id": rid,
+            "paired": bool(sid),
+            "name": g.get("name") or rid,
+            "is_external": 1 if g.get("external") else 0,
+            "notice": g.get("notice") or "",
+            "owner": str(g.get("owner") or ""),
+            "bot_id": str(g.get("imBotId") or ""),
+            "members": len(g.get("memberList") or []),
+        })
+    out.sort(key=lambda x: (not x["paired"], x["name"]))
+    return out, err
+
+
+def members_of(session_id, force=False):
+    """某会话对应企微群的成员列表 -> [{id,name,...}]。"""
+    if str(session_id or "").startswith("S:"):
+        return [], "私聊没有群成员"
+    sess = STORE.get_session(session_id) if STORE else None
+    rid = (sess or {}).get("room_id") or ""
+    if not rid and not sess:
+        # 本地压根没这个会话 —— 那前端传的多半就是 imRoomId(从群列表点进来的)。
+        # 不靠格式猜: 对不上的话下面的循环自然会返回"没这个群"。
+        rid = str(session_id or "")
+    if not rid:
+        return [], "该会话没有对应的企微群（非企微渠道，或还没收到过消息）"
+    raw, err = jjy_group_list(force)
+    for g in raw:
+        if str(g.get("imRoomId") or "") == rid or str(g.get("wecomChatId") or "") == rid:
+            return [{
+                "id": str(m.get("imContactId") or ""),
+                "name": m.get("nickName") or "",
+                "avatar": m.get("avatarUrl") or "",
+                "corp": m.get("corpName") or "",
+                "external_id": str(m.get("externalUserId") or ""),
+                # type: 1=个人微信 2=企业微信 3=内部同事(文档两处口径不一, 原样透出)
+                "type": m.get("type"),
+                "is_owner": 1 if m.get("identity") == 2 else 0,
+                "join_time": m.get("joinTime") or 0,
+            } for m in (g.get("memberList") or []) if isinstance(m, dict)], err
+    return [], err or "群列表里没有这个群（可能不在托管账号名下）"
 
 
 def _private_peer_id(sid, self_id=""):
@@ -803,7 +1049,7 @@ def on_message(msg):
     global _PUSH_SEEN
     if not _PUSH_SEEN:
         _PUSH_SEEN = True
-        log.info("首次收到 DLL 推送 (type=%s) —— DLL→网关推送通道正常", msg.get("type"))
+        log.info("首次收到语聚推送 (type=%s) —— 回调链路正常", msg.get("type"))
     outer = msg.get("type")
     if outer != PUSH_CHAT:              # 只处理聊天消息(100)，其余(好友申请/掉线等)先忽略
         return
@@ -900,6 +1146,17 @@ def jjy_worker():
                     CONTACT_TYPE[msg["sender"]] = bool(msg["sender_external"])
             _capture_jjy_raw(body, msg)
             on_message(msg)
+            # 群管理接口那套 id 只在推送里出现，见到就落一次库(值没变的不写)。
+            # 必须放在 on_message 之后 —— 会话行是那时候才建出来的。
+            jy = msg.get("jjy") or {}
+            if jy.get("room_id") and STORE:
+                key = (sid, jy["room_id"], jy.get("bot_id") or "")
+                with _lock:
+                    known = ROOM_LINKED.get(sid) == key
+                    if not known:
+                        ROOM_LINKED[sid] = key
+                if not known:
+                    STORE.link_room(sid, jy["room_id"], jy.get("bot_id") or "")
         except Exception as e:
             log.exception("语聚报文处理异常: %s", e)
         finally:
@@ -1137,8 +1394,16 @@ class Handler(BaseHTTPRequestHandler):
                 "on": bool((CONFIG.get("debug") or {}).get("raw_push"))})
         # 通讯录/群列表：webhook 模式下没有这类接口，返回空列表 + 说明，
         # 让前端页面能正常渲染而不是报错。显示名靠推送累积(见 NAME_MAP)。
-        if p in ("/gw/groups", "/gw/contacts"):
-            return self._send_json({"list": [], "error": "webhook 模式无通讯录接口"})
+        if p == "/gw/groups":
+            force = (parse_qs(u.query).get("refresh") or ["0"])[0] == "1"
+            lst, err = groups_for_picker(force)
+            return self._send_json({"list": lst, "error": err,
+                                    "unpaired": sum(1 for x in lst if not x["paired"])})
+        if p == "/gw/contacts":
+            force = (parse_qs(u.query).get("refresh") or ["0"])[0] == "1"
+            lst, err = contacts_for_picker(force)
+            return self._send_json({"list": lst, "error": err,
+                                    "unpaired": sum(1 for x in lst if not x["paired"])})
         if p == "/gw/sessions":
             return self._send_json({"list": STORE.get_sessions()})
         if p == "/gw/messages":
@@ -1190,9 +1455,10 @@ class Handler(BaseHTTPRequestHandler):
             body = self._read_json()
             # 前端拿到的 apiKey 是打过码的，原样回传时当"不修改"处理，
             # 否则用户改个别的字段就会把真 key 覆盖成一串星号。
-            if isinstance(body.get("jjy"), dict) and \
-               body["jjy"].get("api_key") == API_KEY_MASK:
-                body["jjy"].pop("api_key")
+            if isinstance(body.get("jjy"), dict):
+                for k in SECRET_KEYS:
+                    if body["jjy"].get(k) == API_KEY_MASK:
+                        body["jjy"].pop(k)
             with _lock:
                 for k, v in body.items():
                     if k not in DEFAULT_CONFIG:
@@ -1233,8 +1499,10 @@ class Handler(BaseHTTPRequestHandler):
                 return self._send_json({"ok": False, "error": str(e)}, 500)
 
         if p == "/gw/members":
-            return self._send_json({"list": [], "cached": False,
-                                    "error": "webhook 模式无群成员接口"})
+            b = self._read_json()
+            lst, err = members_of(str(b.get("group_id") or ""), bool(b.get("refresh")))
+            return self._send_json({"list": lst, "cached": not b.get("refresh"),
+                                    "error": err})
 
         if p == "/gw/messages":       # 兼容旧调用形态(参数走 body)
             b = self._read_json()
@@ -1282,9 +1550,26 @@ class Handler(BaseHTTPRequestHandler):
                                    mention=b.get("mention"))
             return self._send_json({"ok": ok, "error": err})
 
+        if p == "/gw/revoke":
+            b = self._read_json()
+            sid = str(b.get("session") or ""); mid = str(b.get("msg_id") or "")
+            ok, err = jjy_revoke(sid, mid)
+            if ok:
+                # 语聚不会给撤回回声，本地自己标记 + 广播，不然界面不动
+                m, s = STORE.revoke_message(mid, sid)
+                if m:
+                    BUS.publish({"type": "revoke", "session_id": sid,
+                                 "message": m, "session": s})
+            return self._send_json({"ok": ok, "error": err})
+
         if p == "/gw/sync-contacts":
-            return self._send_json({"ok": False, "groups": 0, "friends": 0,
-                                    "error": "webhook 模式无通讯录接口"})
+            gl, ge = groups_for_picker(force=True)
+            cl, ce = contacts_for_picker(force=True)
+            err = ge or ce
+            return self._send_json({"ok": bool(gl or cl) or not err,
+                                    "groups": len(gl), "friends": len(cl),
+                                    "unpaired": sum(1 for x in gl + cl if not x["paired"]),
+                                    "error": err})
 
         if p == "/gw/test-webhook":
             ok, err = push_webhook("🔔 vworkApi 网关 webhook 测试消息\n时间：%s"
@@ -1298,10 +1583,8 @@ class Handler(BaseHTTPRequestHandler):
             return self._send_json({"ok": ok, "error": err})
 
         if p == "/gw/check-apikey":
-            # 语聚没有单独的"验证凭证"接口，只能拿发送接口探一下：故意用一个不存在的
-            # chat_id —— 认证过得去就会走到参数校验才失败(HTTP 200 + Code=4000)，
-            # 认证不行则直接 401。所以判定依据是「拿到了 Code=4000」而不是「没报 401」，
-            # 后者会把网络超时也算成 key 有效。这条请求发不出任何消息。
+            # 官方的校验接口。⚠️ 它**不守** Code/Data/Msg 那套约定，直接回
+            # {"success": true} / 401 —— 所以这里不能走 _jjy_call。
             #
             # 前端传的是输入框里的当前值 —— 验"刚填的"而不是"已存的"，免得改完没保存
             # 就点校验，验的却是旧 key。传打码占位符(= 没动过输入框)时退回用已存的。
@@ -1310,13 +1593,18 @@ class Handler(BaseHTTPRequestHandler):
                 key = ""
             if not (key or ((CONFIG.get("jjy") or {}).get("api_key") or "").strip()):
                 return self._send_json({"ok": False, "error": "还没填 apiKey"})
-            meta = {}
-            ok, err = jjy_send("__apikey_probe__", 2, {"text": "ping"}, meta, key)
-            if ok or meta.get("code") == 4000:
-                return self._send_json({"ok": True, "detail": err})
-            if not meta:                              # 一次 HTTP 响应都没拿到
-                return self._send_json({"ok": False, "error": "没连上语聚：%s" % err})
-            return self._send_json({"ok": False, "error": err})
+            try:
+                req = urllib.request.Request(_jjy_url("/v1/openapi/check", key),
+                                             method="GET")
+                with urllib.request.urlopen(req, timeout=10) as resp:
+                    j = json.loads(resp.read().decode("utf-8", "ignore") or "{}")
+                return self._send_json({"ok": bool(j.get("success")),
+                                        "error": "" if j.get("success") else "语聚未确认有效"})
+            except urllib.error.HTTPError as e:
+                return self._send_json({"ok": False, "error": (
+                    "apiKey 无效或权限不足（401）" if e.code == 401 else "HTTP %s" % e.code)})
+            except Exception as e:
+                return self._send_json({"ok": False, "error": "没连上语聚：%s" % e})
 
         return self._send_json({"error": "not found"}, 404)
 

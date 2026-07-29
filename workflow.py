@@ -6,7 +6,8 @@ workflow.py — 消息工作流引擎 (纯标准库)
 
   触发条件(全部可选，不填=不限)：
     sessions   指定会话(群 R: / 私聊 S:)
-    senders    指定发送人 user_id
+    senders    指定发送人。聚合对话推送的 user_id 和企微群成员接口的
+               imContactId 是两套 id，选人面板给的是后者 —— 所以两个都比(见 _match)
     at_me      是否@了托管账号: any(不限) / yes(必须@) / no(必须未@)   仅群聊有意义
     msg_types  消息类型(2=文本…)
     content    内容匹配: none / any(任一关键词) / all(全部关键词) / regex(正则)
@@ -451,8 +452,14 @@ class WorkflowEngine:
             return False, "非群聊消息(条件要求仅群聊)"
         if ct == "private" and not sid.startswith("S:"):
             return False, "非私聊消息(条件要求仅私聊)"
-        if t.get("senders") and sender not in t["senders"]:
-            return False, "发送人不匹配"
+        if t.get("senders"):
+            # 发送人有两个 id：聚合对话推送给的 user_id(32位hex)，和企微群成员
+            # 接口给的 imContactId(16位数字)。选人面板列的是后者，消息里带的是
+            # 前者 —— 只比一个必然永远不匹配，所以两个都比。
+            alt = str(((msg.get("jjy") or {}).get("addition") or {})
+                      .get("external_contact_id") or "")
+            if sender not in t["senders"] and not (alt and alt in t["senders"]):
+                return False, "发送人不匹配"
         stype = t.get("sender_type", "any")
         if stype in ("internal", "external"):
             se = msg.get("sender_external")

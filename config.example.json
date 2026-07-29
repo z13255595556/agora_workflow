@@ -10,6 +10,7 @@
     "dedup_max": 4000,
     "api_base": "https://chat.jijyun.cn",
     "api_key": "",
+    "api_key_mkt": "",
     "send_qps": 1,
     "send_retry": 2,
     "send_timeout": 15

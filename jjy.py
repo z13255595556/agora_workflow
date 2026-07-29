@@ -238,7 +238,11 @@ def normalize(body, bot_name=""):
             "user_type": ut,
             "rule_id": str(src.get("rule_id") or ""),   # 类型不稳定，一律转字符串
             "source_name": src.get("source_name") or "",
+            # room_id/bot_wxid 是**企微群管理接口那套 id**(imRoomId/imBotId)，
+            # 和上面的 chat_id 不是一个空间。这是唯一能把两边对上的地方 ——
+            # 群列表接口返回的 imRoomId 全靠它映射回本地会话。私聊没有 room_id。
             "room_id": (src.get("source_addition") or {}).get("room_id") or "",
+            "bot_id": str((src.get("source_addition") or {}).get("bot_wxid") or ""),
             "bot_name": (src.get("source_addition") or {}).get("bot_name") or "",
             # 渠道原生 id：微信客服/企微代运营等，回连自有身份体系的 join key
             "addition": user.get("user_addition") or {},

@@ -156,6 +156,32 @@
   /* ---- 撤回：原消息留档，只展示成一行系统提示 ---- */
   .wa-revoked{text-align:center;margin:8px 0;font-size:11.5px;color:var(--text-3)}
 
+  /* ---- 气泡悬停操作条(引用 / 撤回) ---- */
+  .wa-row .col{position:relative}
+  .wa-ops{position:absolute;top:-9px;display:none;gap:2px;padding:2px;
+          background:var(--panel);border:1px solid var(--border);border-radius:8px;
+          box-shadow:0 2px 8px rgba(15,18,26,.1);z-index:2}
+  .wa-row:not(.me) .wa-ops{right:-4px;transform:translateX(100%)}
+  .wa-row.me .wa-ops{left:-4px;transform:translateX(-100%)}
+  .wa-row:hover .wa-ops{display:flex}
+  .wa-ops button{border:0;background:transparent;cursor:pointer;border-radius:6px;
+                 padding:4px 7px;font-size:11.5px;color:var(--text-2);white-space:nowrap}
+  .wa-ops button:hover{background:var(--brand-weak);color:var(--brand)}
+  .wa-ops button.danger:hover{background:var(--red-bg);color:var(--red)}
+
+  /* ---- 引用：气泡里的引用块 + 输入框上方的待发引用条 ---- */
+  .wa-quote{border-left:2px solid var(--border-2);padding:2px 0 2px 8px;margin-bottom:5px;
+            font-size:12px;line-height:1.5;color:var(--text-3);
+            display:-webkit-box;-webkit-line-clamp:2;-webkit-box-orient:vertical;overflow:hidden}
+  .wa-row.me .wa-quote{border-left-color:rgba(255,255,255,.4);color:rgba(255,255,255,.75)}
+  .qbar{display:flex;align-items:center;gap:8px;padding:7px 12px;margin-bottom:8px;
+        background:var(--panel);border-radius:9px;border-left:2px solid var(--brand)}
+  .qbar .qtx{flex:1;min-width:0;font-size:12px;color:var(--text-2);
+             overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+  .qbar button{border:0;background:transparent;cursor:pointer;color:var(--text-3);
+               padding:2px;display:grid;place-items:center;border-radius:5px}
+  .qbar button:hover{background:var(--border);color:var(--text)}
+
   /* ---- 富文本卡片(链接/位置/名片/小程序) ---- */
   .wa-rich{display:block;background:var(--panel);border-radius:10px;padding:10px 12px;
            min-width:180px;max-width:290px;text-decoration:none;color:inherit;
@@ -314,6 +340,10 @@
   </div>
   <div class="newpill" id="newPill"></div>
   <div class="inputwrap hide" id="waInputBox">
+    <div class="qbar hide" id="qBar">
+      <div class="qtx" id="qTx"></div>
+      <button id="qClear" title="取消引用"><svg class="ic"><use href="#i-x"/></svg></button>
+    </div>
     <div class="input">
       <textarea id="waText" rows="1" placeholder="输入消息…"></textarea>
       <button class="sendbtn" id="waSend" title="发送 (Enter)"><svg class="ic"><use href="#i-send"/></svg></button>
@@ -449,6 +479,7 @@ async function openSession(s){
   cur={id:s.id, name:s.name||s.id, is_group:!!s.is_group};
   msgs=[]; hasMore=false; newCount=0; loadingOlder=false;
   pending=pending.filter(p=>p.sid===cur.id);
+  clearQuote();                 // 引用的是上一个会话的消息，换会话必须丢掉
   $('#waTitle').textContent=cur.name;
   $('#waTag').textContent=cur.is_group?'群聊':'私聊';
   $('#waAva').style.background=avaColor(s.id);
@@ -582,9 +613,15 @@ function bubbleHTML(m,prev){
     ? `<div class="wa-bubble media" data-mkey="${m.media.id}">${mediaHTML(m)}</div>`
     : rich ? `<div class="wa-bubble media">${rich}</div>`
     : `<div class="wa-bubble">${esc(m.content)}</div>`;
-  html+=`<div class="wa-row ${me?'me':''} ${grp?'grp':''}">
+  // 撤回只对自己发的消息给（语聚只允许撤回托管账号自己发的）。
+  // 引用需要消息 id —— 语聚的 quoteMessageId 用的就是推送里那个 message_id。
+  const ops=`<div class="wa-ops">`
+    +(m.id?`<button data-quote="${esc(m.id)}">引用</button>`:'')
+    +(me&&m.id?`<button class="danger" data-revoke="${esc(m.id)}">撤回</button>`:'')
+    +`</div>`;
+  html+=`<div class="wa-row ${me?'me':''} ${grp?'grp':''}" data-seq="${m.seq}">
     <div class="a" style="background:${avaColor(me?'me':(m.sender||m.sender_name))}">${esc(me?'我':initial(m.sender_name||m.sender))}</div>
-    <div class="col">${who}${body}</div></div>`;
+    <div class="col">${who}${body}${ops}</div></div>`;
   return html;
 }
 function pendingHTML(p,prev){
@@ -594,9 +631,12 @@ function pendingHTML(p,prev){
   const grp=prev&&!dv&&(prev.key||prev.is_self)&&(p.time-(prev.time||0)<180);
   const cls=(p.state==='failed'?'failed':(p.state==='sending'?'pending':''))+(grp?' grp':'');
   const hint=p.state==='failed'?'<div class="wa-fail-hint">发送失败 · 点击气泡重试</div>':'';
+  // 引用块只在乐观气泡上画：语聚推回来的报文里没有引用结构，
+  // 回声一到这条就被替换成普通气泡了。别为了好看去编一个不存在的字段。
+  const q=p.quote?`<div class="wa-quote">${esc(p.quote.name)}：${esc(p.quote.text)}</div>`:'';
   html+=`<div class="wa-row me ${cls}" data-pkey="${p.key}">
     <div class="a" style="background:${avaColor('me')}">我</div>
-    <div class="col"><div class="wa-bubble">${esc(p.content)}</div>${hint}</div></div>`;
+    <div class="col"><div class="wa-bubble">${q}${esc(p.content)}</div>${hint}</div></div>`;
   return html;
 }
 function render(toBottom){
@@ -641,6 +681,10 @@ $('#waMsgs').addEventListener('scroll',()=>{
 });
 $('#waMsgs').addEventListener('click',e=>{
   if(e.target.id==='waMore'){ loadOlder(); return; }
+  const q=e.target.closest('[data-quote]');
+  if(q){ setQuote(q.dataset.quote); return; }
+  const rv=e.target.closest('[data-revoke]');
+  if(rv){ doRevoke(rv.dataset.revoke); return; }
   // 图片点击 -> 大图预览
   const img=e.target.closest('[data-img]');
   if(img){ openLightbox(img.dataset.img); return; }
@@ -650,6 +694,32 @@ $('#waMsgs').addEventListener('click',e=>{
   const row=e.target.closest('.wa-row.failed');
   if(row){ const p=pending.find(x=>x.key===row.dataset.pkey); if(p) doSend(p); }
 });
+
+// ==================== 引用 ====================
+let quoting=null;          // {id,name,text} 待发送的引用目标
+function setQuote(mid){
+  const m=msgs.find(x=>x.id===mid);
+  if(!m) return;
+  quoting={id:mid, name:(m.is_self?'我':(m.sender_name||m.sender||'对方')),
+           text:(m.content||'[非文本消息]').slice(0,80)};
+  paintQuote();
+  $('#waText').focus();
+}
+function clearQuote(){ quoting=null; paintQuote(); }
+function paintQuote(){
+  $('#qBar').classList.toggle('hide',!quoting);
+  if(quoting) $('#qTx').textContent=`引用 ${quoting.name}：${quoting.text}`;
+}
+$('#qClear').onclick=clearQuote;
+
+// ==================== 撤回 ====================
+async function doRevoke(mid){
+  if(!cur||!confirm('撤回这条消息？')) return;
+  let j; try{ j=await api('gw/revoke',{session:cur.id,msg_id:mid}); }
+  catch(e){ j={ok:false}; }
+  // 撤回成功后界面由 SSE 的 revoke 事件更新，这里只在失败时提示
+  if(!j.ok) toast('撤回失败：'+(j.error||'语聚只支持小红书/企微，且有时限'));
+}
 
 // ---- 按需下载：立刻返回，真正就绪等 SSE 的 media 事件 ----
 // 按媒体 id 找到所属消息。图文一条消息挂多张图，每张有独立 id，
@@ -724,7 +794,7 @@ function renderRD(){
   const box=$('#rdBody');
   if(!RD_ON){
     box.innerHTML=`<div class="rd-off">原始推送抓取当前是<b>关闭</b>的。<br>
-      打开后，企微 DLL 的每一条回调都会实时出现在这里，用于排查消息结构。<br>
+      打开后，语聚推送的每一条报文都会实时出现在这里，用于排查消息结构。<br>
       <button id="rdTurnOn">开启抓取</button></div>`;
     $('#rdTurnOn').onclick=async()=>{
       await api('gw/config',{debug:{raw_push:true}});
@@ -828,15 +898,17 @@ async function waSend(){
   const t=$('#waText').value.trim();
   if(!t||!cur) return;
   $('#waText').value='';
-  const p={key:'p'+(pkey++), sid:cur.id, content:t,
+  const p={key:'p'+(pkey++), sid:cur.id, content:t, quote:quoting,
            time:Math.floor(Date.now()/1000), state:'sending'};
+  clearQuote();
   pending.push(p);
   render(true);
   doSend(p);
 }
 async function doSend(p){
   p.state='sending'; render(isAtBottom());
-  let j; try{ j=await api('gw/send',{session:p.sid,text:p.content}); }
+  let j; try{ j=await api('gw/send',{session:p.sid,text:p.content,
+                                     quote:(p.quote||{}).id||''}); }
   catch(e){ j={ok:false}; }
   if(!j.ok){ p.state='failed'; toast('发送失败：'+(j.error||'请到管理后台检查语聚 apiKey')); }
   else p.state='sent';     // 等 SSE 回声到达后替换成正式消息
@@ -919,8 +991,9 @@ $('#waSync').onclick=async()=>{
   btn.classList.add('spin'); btn.disabled=true;
   try{ const j=await api('gw/sync-contacts',{});
     if(j.error && !(j.groups||j.friends)) toast('同步失败：'+j.error);
-    else toast(`已同步 群 ${j.groups||0} · 好友 ${j.friends||0}`+(j.error?'（部分受限）':'')); }
-  catch(e){ toast('同步失败：企微服务未就绪'); }
+    else toast(`已同步 群 ${j.groups||0} · 联系人 ${j.friends||0}`
+      +(j.unpaired?`（${j.unpaired} 个还没收到过消息）`:'')+(j.error?'（部分受限）':'')); }
+  catch(e){ toast('同步失败：检查语聚 apiKey'); }
   btn.classList.remove('spin'); btn.disabled=false;
   loadSessions();
 };
