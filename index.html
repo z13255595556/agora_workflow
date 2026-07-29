@@ -838,7 +838,7 @@ async function doSend(p){
   p.state='sending'; render(isAtBottom());
   let j; try{ j=await api('gw/send',{session:p.sid,text:p.content}); }
   catch(e){ j={ok:false}; }
-  if(!j.ok){ p.state='failed'; toast('发送失败：'+(j.error||'检查企微登录状态')); }
+  if(!j.ok){ p.state='failed'; toast('发送失败：'+(j.error||'请到管理后台检查语聚 apiKey')); }
   else p.state='sent';     // 等 SSE 回声到达后替换成正式消息
   render(isAtBottom());
 }

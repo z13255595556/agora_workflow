@@ -7,7 +7,12 @@
       "your-company-id"
     ],
     "bot_name": "你的机器人昵称",
-    "dedup_max": 4000
+    "dedup_max": 4000,
+    "api_base": "https://chat.jijyun.cn",
+    "api_key": "",
+    "send_qps": 1,
+    "send_retry": 2,
+    "send_timeout": 15
   },
   "storage": {
     "db_file": "gateway.db",

@@ -20,8 +20,8 @@
   * GET /gw/events 是 SSE 实时推送；断线重连用 after=<last_seq> 补差
   * 未读数走显式 POST /gw/read(Chatwoot 收件箱模型)
 
-⚠️ 出站发送尚未接入：语聚的发消息接口需要单独对接，当前 send_text() 是一个
-   明确失败的桩。因此工作台目前是**只读**的。
+出站发送走语聚 OpenAPI(POST /v1/openapi/aggregate/message/send)，见 jjy_send()。
+需要在配置里填 `jjy.api_key`(语聚「应用助手 → 集成配置」页获取)，留空则发送不可用。
 
 ⚠️ 语聚 webhook 没有签名机制，`jjy.allow_company` 白名单是唯一的身份校验，
    公网部署务必配置，并把服务放在反向代理后面。
@@ -37,6 +37,7 @@ import uuid
 import threading
 import logging
 import urllib.request
+import urllib.error
 from collections import deque
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from urllib.parse import urlparse, parse_qs, quote
@@ -64,7 +65,19 @@ DEFAULT_CONFIG = {
         "allow_company": [],              # 语聚控制台里的公司 ID, 例: ["your-company-id"]
         "bot_name": "",                   # 托管机器人昵称。群聊 @我 判定靠文本匹配 ——
                                           # 语聚报文里没有结构化的 at_list
-        "dedup_max": 4000                 # event_id 去重窗口(条)。语聚重推带同一个 id
+        "dedup_max": 4000,                # event_id 去重窗口(条)。语聚重推带同一个 id
+
+        # ---- 出站发送: POST {api_base}/v1/openapi/aggregate/message/send ----
+        # apiKey 在语聚「应用助手 → 集成配置」页获取。留空 = 发送不可用(工作台只读)。
+        #
+        # ⚠️ apiKey 是走 query string 的(官方接口就这么设计)，所以凡是打日志的地方
+        #    都不能带完整 url；/gw/config 返回给前端时也做了打码, 见 _public_config()。
+        "api_base": "https://chat.jijyun.cn",
+        "api_key": "",
+        "send_qps": 1,                    # 全局发送速率(条/秒)。语聚的 429 文案是
+                                          # "Too Many Requests in one second", 按秒限流
+        "send_retry": 2,                  # 429/5xx/网络错误的重试次数(业务失败不重试)
+        "send_timeout": 15
     },
     "storage": {
         "db_file": "gateway.db",          # 消息数据库(SQLite), 相对路径按本目录解析
@@ -178,7 +191,10 @@ SEEN_SET    = set()                    # 与 SEEN_EVENTS 同步, 用于 O(1) 判
 JJY_STATS   = {"received": 0, "dup": 0, "rejected": 0,
                "ignored": 0,          # 非 ai_assistant_receives_msg 的事件(如 chat_finish)
                "bad": 0,              # 是本事件但缺关键字段, 解析不出来
-               "last_at": 0}
+               "last_at": 0,
+               "sent": 0,             # 出站发送成功条数(本次启动以来)
+               "send_fail": 0,
+               "send_err": ""}        # 最近一次发送失败的原因
 
 # 原始推送调试缓冲(只在内存, 不落库)。默认关, 见 config.debug.raw_push
 RAW_PUSHES  = deque(maxlen=1000)
@@ -283,20 +299,142 @@ def save_config():
     with open(CONFIG_FILE, "w", encoding="utf-8") as f:
         json.dump(CONFIG, f, ensure_ascii=False, indent=2)
 
+# 前端回填时用的占位符。管理页虽然在鉴权后面，但 apiKey 是能替别人发消息的凭证，
+# 和 company_id 不是一个量级 —— 不往浏览器里吐原文。
+API_KEY_MASK = "********"
+
+def _public_config():
+    """给前端看的配置：apiKey 打码，其余原样。"""
+    c = json.loads(json.dumps(CONFIG))       # 深拷贝, 别改到全局
+    j = c.get("jjy")
+    if isinstance(j, dict) and j.get("api_key"):
+        j["api_key"] = API_KEY_MASK
+    return c
+
 # ============================ 消息源适配 ============================
 # 本项目的消息源是语聚(集简云)聚合对话 webhook —— 报文解析见 jjy.py。
 # 通讯录/群成员/登录态这些原本由 IM 客户端提供的能力，webhook 模式下都没有：
 # 显示名只能从每条推送里的 user_name / chat_title 累积（见 jjy_worker）。
 
-def send_text(conversation_id, msg):
-    """出站发送。当前未接入任何发送通道 —— 明确返回 False 并记一条日志。
+SEND_GATE  = threading.Lock()          # 全局发送节流锁(工作台手发/工作流群发共用)
+_send_next = [0.0]                     # 下一次允许发送的 monotonic 时刻
 
-    不做成静默成功：否则工作流会显示"已转发"，实际一条都没发出去，
-    这种假成功比直接报错难查得多。
+def _send_throttle():
+    """按 jjy.send_qps 全局串行节流。
+
+    语聚的 429 文案是 "Too Many Requests in one second" —— 限的是每秒并发。
+    工作流一次转发给 N 个目标是个 for 循环，不限流必然连撞 429，
+    所以这里拿锁串起来：慢一点，但不丢消息。
     """
-    log.warning("发送通道未接入，丢弃一条出站消息: session=%s len=%d",
-                conversation_id, len(msg or ""))
-    return False
+    qps = float((CONFIG.get("jjy") or {}).get("send_qps") or 1)
+    gap = 1.0 / max(0.1, min(qps, 20))
+    with SEND_GATE:
+        wait = _send_next[0] - time.monotonic()
+        if wait > 0:
+            time.sleep(wait)
+        _send_next[0] = time.monotonic() + gap
+
+
+def jjy_send(conversation_id, message_type, message_content, meta=None, api_key=""):
+    """调语聚「发送/回复聚合对话消息」。返回 (ok, err)。
+
+    meta 传一个 dict 的话会被填上 {"http": <状态码>, "code": <业务 Code>}，
+    用来区分"没发出去"的原因(网络断 / 认证挂了 / 参数不对)——只有 /gw/check-apikey
+    需要这个粒度，正常发送看 ok 就够了。api_key 同理: 只有校验按钮会传，
+    为的是验「输入框里刚填的那个」而不是「已经存下的那个」。
+
+        POST {api_base}/v1/openapi/aggregate/message/send?apiKey=xxx
+        {"chat_id": "...", "message_type": 2, "message_content": {...}}
+
+    ⚠️ 响应体的键是**大写开头**的(Code/Data/Msg)，不是常见的 code/data/msg：
+        {"Code": 2000, "Data": {"channel": "...", "chat_id": "..."}, "Msg": ""}
+        {"Code": 4000, "Data": "<失败信息>", "Msg": "<错误具体原因>"}
+
+    message_type: 2=文本 9=图片 8=文件 3=语音 10~16=各渠道素材。
+    文本是 {"text": ...}；图片/文件/语音都是 {"url": "公网可访问的链接"}；
+    素材是 {"material_id": ...}。所以要发图只需 jjy_send(sid, 9, {"url": ...})。
+    """
+    meta = meta if isinstance(meta, dict) else {}
+    cfg = CONFIG.get("jjy") or {}
+    key = (api_key or cfg.get("api_key") or "").strip()
+    if not key:
+        return False, "未配置语聚 apiKey（管理后台 → 系统设置 → 语聚接入）"
+    chat_id = jjy.raw_chat_id(conversation_id)
+    if not chat_id:
+        return False, "会话 id 为空"
+
+    base = (cfg.get("api_base") or "https://chat.jijyun.cn").rstrip("/")
+    # apiKey 在 query string 里 —— 下面任何一条日志都不许带 url
+    url = "%s/v1/openapi/aggregate/message/send?apiKey=%s" % (base, quote(key, safe=""))
+    body = json.dumps({"chat_id": chat_id,
+                       "message_type": int(message_type),
+                       "message_content": message_content},
+                      ensure_ascii=False).encode("utf-8")
+    timeout = max(3, int(cfg.get("send_timeout") or 15))
+    tries   = max(1, int(cfg.get("send_retry") or 0) + 1)
+
+    err = ""
+    for i in range(tries):
+        _send_throttle()
+        req = urllib.request.Request(
+            url, data=body, method="POST",
+            headers={"Content-Type": "application/json; charset=utf-8"})
+        try:
+            with urllib.request.urlopen(req, timeout=timeout) as resp:
+                meta["http"] = resp.status
+                raw = resp.read().decode("utf-8", "ignore")
+            j = json.loads(raw or "{}")
+            meta["code"] = j.get("Code")
+            if j.get("Code") == 2000:
+                return True, ""
+            # 业务失败(4000)：参数不对、会话已关闭之类，重试也是一样的结果
+            data = j.get("Data")
+            return False, (j.get("Msg") or (data if isinstance(data, str) else "")
+                           or "语聚返回 Code=%s" % j.get("Code"))
+        except urllib.error.HTTPError as e:
+            meta["http"] = e.code
+            if e.code == 401:
+                return False, "apiKey 无效或已失效（401）"
+            if e.code == 402:
+                return False, "语聚资源包不足（402）"
+            err = "HTTP %s" % e.code
+            if e.code != 429 and e.code < 500:      # 4xx 是我们发的请求有问题
+                return False, err
+        except Exception as e:                       # 超时/连接失败/响应不是 JSON
+            err = str(e)
+        if i < tries - 1:
+            time.sleep(1.2 + i)                      # 429 是按秒限的, 退避要跨过这一秒
+    return False, err or "发送失败"
+
+
+def send_text_ex(conversation_id, msg, quote_id="", mention=None):
+    """发文本，返回 (ok, err)。前端要拿 err 显示，所以和 send_text 分成两个。"""
+    text = str(msg or "")
+    if not text:
+        return False, "内容为空"
+    mc = {"text": text}
+    if quote_id:                       # 引用/@ 目前只有企微代运营渠道支持，
+        mc["quoteMessageId"] = str(quote_id)   # 其他渠道语聚会忽略这两个字段
+    if mention:
+        mc["mention"] = [str(x) for x in mention]
+
+    ok, err = jjy_send(conversation_id, 2, mc)
+    with _lock:
+        if ok:
+            JJY_STATS["sent"] += 1
+        else:
+            JJY_STATS["send_fail"] += 1
+            JJY_STATS["send_err"] = err
+    if ok:
+        log.info("已发送 -> %s (%d 字)", conversation_id, len(text))
+    else:
+        log.warning("发送失败 -> %s: %s", conversation_id, err)
+    return ok, err
+
+
+def send_text(conversation_id, msg):
+    """工作流引擎约定的发送出口：send_text(sid, text) -> bool。"""
+    return send_text_ex(conversation_id, msg)[0]
 
 
 def _private_peer_id(sid, self_id=""):
@@ -961,7 +1099,7 @@ class Handler(BaseHTTPRequestHandler):
                                "listen_port": CONFIG.get("listen_port")},
                 })
         if p == "/gw/config":
-            return self._send_json(CONFIG)
+            return self._send_json(_public_config())
         if p == "/gw/workflows":
             return self._send_json({"workflows": WF.list() if WF else []})
         if p == "/gw/workflow-runs":
@@ -1050,6 +1188,11 @@ class Handler(BaseHTTPRequestHandler):
         # 管理 API
         if p == "/gw/config":
             body = self._read_json()
+            # 前端拿到的 apiKey 是打过码的，原样回传时当"不修改"处理，
+            # 否则用户改个别的字段就会把真 key 覆盖成一串星号。
+            if isinstance(body.get("jjy"), dict) and \
+               body["jjy"].get("api_key") == API_KEY_MASK:
+                body["jjy"].pop("api_key")
             with _lock:
                 for k, v in body.items():
                     if k not in DEFAULT_CONFIG:
@@ -1060,7 +1203,7 @@ class Handler(BaseHTTPRequestHandler):
                         CONFIG[k] = v
                 save_config()
             log.info("配置已更新")
-            return self._send_json({"ok": True, "config": CONFIG})
+            return self._send_json({"ok": True, "config": _public_config()})
 
         if p == "/gw/workflows":
             body = self._read_json()
@@ -1135,8 +1278,9 @@ class Handler(BaseHTTPRequestHandler):
             sid = str(b.get("session", "")); text = b.get("text", "")
             if not sid or not text:
                 return self._send_json({"ok": False, "error": "缺少 session 或 text"}, 400)
-            ok = send_text(sid, text)
-            return self._send_json({"ok": ok})
+            ok, err = send_text_ex(sid, text, quote_id=b.get("quote") or "",
+                                   mention=b.get("mention"))
+            return self._send_json({"ok": ok, "error": err})
 
         if p == "/gw/sync-contacts":
             return self._send_json({"ok": False, "groups": 0, "friends": 0,
@@ -1149,8 +1293,30 @@ class Handler(BaseHTTPRequestHandler):
 
         if p == "/gw/test-send":
             b = self._read_json()
-            ok = send_text(b.get("user_id", ""), b.get("msg", "测试消息"))
-            return self._send_json({"ok": ok})
+            ok, err = send_text_ex(b.get("session") or b.get("user_id", ""),
+                                   b.get("msg", "测试消息"))
+            return self._send_json({"ok": ok, "error": err})
+
+        if p == "/gw/check-apikey":
+            # 语聚没有单独的"验证凭证"接口，只能拿发送接口探一下：故意用一个不存在的
+            # chat_id —— 认证过得去就会走到参数校验才失败(HTTP 200 + Code=4000)，
+            # 认证不行则直接 401。所以判定依据是「拿到了 Code=4000」而不是「没报 401」，
+            # 后者会把网络超时也算成 key 有效。这条请求发不出任何消息。
+            #
+            # 前端传的是输入框里的当前值 —— 验"刚填的"而不是"已存的"，免得改完没保存
+            # 就点校验，验的却是旧 key。传打码占位符(= 没动过输入框)时退回用已存的。
+            key = str(self._read_json().get("api_key") or "").strip()
+            if key == API_KEY_MASK:
+                key = ""
+            if not (key or ((CONFIG.get("jjy") or {}).get("api_key") or "").strip()):
+                return self._send_json({"ok": False, "error": "还没填 apiKey"})
+            meta = {}
+            ok, err = jjy_send("__apikey_probe__", 2, {"text": "ping"}, meta, key)
+            if ok or meta.get("code") == 4000:
+                return self._send_json({"ok": True, "detail": err})
+            if not meta:                              # 一次 HTTP 响应都没拿到
+                return self._send_json({"ok": False, "error": "没连上语聚：%s" % err})
+            return self._send_json({"ok": False, "error": err})
 
         return self._send_json({"error": "not found"}, 404)
 

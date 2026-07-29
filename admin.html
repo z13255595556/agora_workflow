@@ -155,7 +155,7 @@
   .ffield{margin-bottom:14px}
   .ffield .lab{font-size:12.5px;font-weight:600;margin-bottom:6px;display:flex;align-items:center;gap:8px}
   .ffield .lab .tip{font-weight:400;color:var(--text-3);font-size:11.5px}
-  input[type=text],input[type=number],select,textarea{
+  input[type=text],input[type=number],input[type=password],select,textarea{
     width:100%;padding:8px 12px;border:1px solid var(--border-2);border-radius:8px;
     font-size:13px;font-family:inherit;background:#fff;color:var(--text);transition:.13s}
   textarea{resize:vertical;line-height:1.55}
@@ -460,6 +460,23 @@
           <input type="number" id="cfgJjyDedup" min="100" placeholder="4000"></div>
       </div>
 
+      <div class="sec">出站发送</div>
+      <div class="ffield"><div class="lab">语聚 apiKey
+        <span class="tip">语聚「应用助手 → 集成配置」页获取。留空 = 工作台只读、工作流发不出消息</span></div>
+        <input type="password" id="cfgJjyKey" autocomplete="off" placeholder="G-xxxxxxxx"></div>
+      <div class="warnbar" id="sendWarn">
+        填了 apiKey 之后，工作台就能直接往客户会话里发消息，工作流的「转发 / 回复」也会真的发出去。
+        如果语聚后台已经配了 AI 自动回复规则，<b>同一条消息会有两个机器人抢答</b> —— 开之前先确认规则。
+      </div>
+      <div class="frow">
+        <div class="ffield"><div class="lab">发送速率(条/秒)
+          <span class="tip">语聚按秒限流，超了返回 429。群发时全局串行排队</span></div>
+          <input type="number" id="cfgJjyQps" min="1" max="20" placeholder="1"></div>
+        <div class="ffield"><div class="lab">失败重试次数
+          <span class="tip">只重试 429 / 5xx / 网络错误，参数错不重试</span></div>
+          <input type="number" id="cfgJjyRetry" min="0" max="5" placeholder="2"></div>
+      </div>
+
       <div class="sec">服务</div>
       <div class="frow">
         <div class="ffield"><div class="lab">监听地址
@@ -521,7 +538,8 @@
       </div>
       <div style="display:flex;gap:10px;margin-top:16px">
         <button class="btn primary" id="btnSaveCfg">保存设置</button>
-        <button class="btn" id="btnTestHook">发送测试消息</button>
+        <button class="btn" id="btnCheckKey" title="拿一个不存在的会话试发，只看认证过不过。不会发出任何消息">校验 apiKey</button>
+        <button class="btn" id="btnTestHook">测试告警 Webhook</button>
       </div>
     </div>
   </section>
@@ -1460,12 +1478,13 @@ setInterval(()=>{if(!$('#pane-runs').classList.contains('hide')&&!RUN_PAGED)load
 async function loadStatus(){
   try{
     const s=await api('gw/status');
-    const h=s.health||{},st=s.stats||{},so=s.store||{},w=s.workflow||{};
+    const h=s.health||{},st=s.stats||{},so=s.store||{},w=s.workflow||{},jy=s.jjy||{};
     const up=s.uptime||0,d=Math.floor(up/86400),hh=Math.floor(up%86400/3600),mm=Math.floor(up%3600/60);
     const items=[
       ['运行时长',(d?d+'天':'')+hh+'时'+mm+'分','sm'],
-      ['DLL / 登录',h.healthy===null?'检测中':(h.healthy?'正常':(h.logged_in===false?'企微掉线':'DLL 未就绪')),'sm'],
+      ['健康状态',h.healthy===null?'检测中':(h.healthy?'正常':(h.last_error||'异常')),'sm'],
       ['本次收到消息',st.received||0],
+      ['本次发出',(jy.sent||0)+(jy.send_fail?` (失败${jy.send_fail})`:'')],
       ['本次转发/回复',st.forwarded||0],
       ['历史消息(库)',so.messages||0],
       ['会话数(库)',so.sessions||0],
@@ -1582,7 +1601,10 @@ async function loadCfg(){
     $('#cfgJjyCompany').value=(j.allow_company||[]).join(', ');
     $('#cfgJjyBot').value=j.bot_name||'';
     $('#cfgJjyDedup').value=j.dedup_max||4000;
-    jjyWarnSync();
+    $('#cfgJjyKey').value=j.api_key||'';      // 后端回的是打码值，见 _public_config()
+    $('#cfgJjyQps').value=j.send_qps||1;
+    $('#cfgJjyRetry').value=j.send_retry??2;
+    jjyWarnSync(); sendWarnSync();
     $('#cfgAddr').value=c.listen_addr||'127.0.0.1';
     $('#cfgPort').value=c.listen_port||9000;
     $('#cfgKeep').value=(c.storage||{}).max_msg_per_session??5000;
@@ -1605,6 +1627,10 @@ function jjyWarnSync(){
   const empty=!$('#cfgJjyCompany').value.trim();
   $('#jjyWarn').classList.toggle('hide',!(empty && $('#cfgJjyOn').checked));
 }
+// 只有填了 key(= 真能发出去)才提示双机器人抢答的风险
+function sendWarnSync(){
+  $('#sendWarn').classList.toggle('hide',!$('#cfgJjyKey').value.trim());
+}
 // 直链模式下把只对下载模式生效的几项置灰，免得改了没反应还以为是 bug
 function mediaModeSync(){
   const dl=$('#cfgMediaMode').value==='download';
@@ -1614,6 +1640,7 @@ function mediaModeSync(){
 }
 $('#cfgJjyCompany').oninput=jjyWarnSync;
 $('#cfgJjyOn').onchange=jjyWarnSync;
+$('#cfgJjyKey').oninput=sendWarnSync;
 $('#cfgMediaMode').onchange=mediaModeSync;
 $('#btnSaveCfg').onclick=async()=>{
   const companies=$('#cfgJjyCompany').value.split(/[,，\s]+/).map(x=>x.trim()).filter(Boolean);
@@ -1622,7 +1649,11 @@ $('#btnSaveCfg').onclick=async()=>{
     listen_port:+$('#cfgPort').value||9000,
     jjy:{enabled:$('#cfgJjyOn').checked,allow_company:companies,
          bot_name:$('#cfgJjyBot').value.trim(),
-         dedup_max:Math.max(100,+$('#cfgJjyDedup').value||4000)},
+         dedup_max:Math.max(100,+$('#cfgJjyDedup').value||4000),
+         // 原样回传打码值 = 不改 key，后端认这个约定
+         api_key:$('#cfgJjyKey').value.trim(),
+         send_qps:Math.min(20,Math.max(1,+$('#cfgJjyQps').value||1)),
+         send_retry:Math.min(5,Math.max(0,+$('#cfgJjyRetry').value||0))},
     storage:{max_msg_per_session:+$('#cfgKeep').value||0},
     media:{mode:$('#cfgMediaMode').value,
            auto_download_mb:+$('#cfgMediaCap').value||50,
@@ -1636,11 +1667,18 @@ $('#btnSaveCfg').onclick=async()=>{
            raw_max:Math.min(1000,Math.max(20,+$('#cfgRawMax').value||300))}});
   $('#rawWarn').classList.toggle('hide',!$('#cfgRawOn').checked);
   $('#rawToggle').checked=$('#cfgRawOn').checked;
-  jjyWarnSync();
+  // 存完把输入框换回打码值，免得真 key 一直挂在页面上
+  $('#cfgJjyKey').value=((j.config||{}).jjy||{}).api_key||'';
+  jjyWarnSync(); sendWarnSync();
   RAW_SEQ=0; loadRaw(false);
   toast(j.ok?'已保存（监听地址/端口/存储/去重窗口需重启生效）':'保存失败');
 };
 $('#cfgRawOn').onchange=e=>$('#rawWarn').classList.toggle('hide',!e.target.checked);
+$('#btnCheckKey').onclick=async()=>{
+  // 验输入框里的当前值，不用先保存
+  const j=await api('gw/check-apikey',{api_key:$('#cfgJjyKey').value.trim()});
+  toast(j.ok?'apiKey 有效（认证已通过）':'apiKey 不可用：'+(j.error||'未知原因'));
+};
 $('#btnTestHook').onclick=async()=>{
   const j=await api('gw/test-webhook',{});
   toast(j.ok?'已发送，请到企微群查看':'发送失败：'+(j.error||'未配置'));
