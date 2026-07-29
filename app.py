@@ -558,19 +558,26 @@ BACKFILL_WAIT  = set()             # 已排队的会话，避免连发几条排�
 BACKFILL_STEPS = (4, 15, 60, 240)
 
 def schedule_backfill(session_id, attempt=0):
+    """延迟 BACKFILL_STEPS[attempt] 秒后入队。
+
+    延迟用 Timer 而不是在 worker 里 sleep —— worker 只有一个线程，
+    在它里面睡就是**队头阻塞**：某个会话退避 240 秒，期间其他会话一条都回填不了。
+    """
     key = (session_id, attempt)
     with _lock:
         if key in BACKFILL_WAIT:
             return
         BACKFILL_WAIT.add(key)
-    BACKFILL_Q.put(key)
+    delay = BACKFILL_STEPS[min(attempt, len(BACKFILL_STEPS) - 1)]
+    t = threading.Timer(delay, BACKFILL_Q.put, args=(key,))
+    t.daemon = True
+    t.start()
 
 
 def backfill_worker():
     while True:
         sid, attempt = BACKFILL_Q.get()
         try:
-            time.sleep(BACKFILL_STEPS[min(attempt, len(BACKFILL_STEPS) - 1)])
             with _lock:
                 BACKFILL_WAIT.discard((sid, attempt))   # 放在查之前, 期间再发的会重新排队
             pend = STORE.local_msgs(sid) if STORE else []
@@ -1224,26 +1231,38 @@ def _jjy_seen(ev):
     return False
 
 
-def _capture_jjy_raw(body, msg):
+def _capture_jjy_raw(body, msg, reason="", raw_text=None):
     """留一份语聚推送原文给管理后台的"原始推送"面板。
 
-    msg=None 表示这条没被归一化(不是消息事件)——这类**也要留一份**，
-    否则 ignored 就是个黑箱：只知道丢了几条，不知道丢的是什么。
+    打开抓取后，**进到这个端口的每一条**都留档，包括三类原本会被静默丢掉的：
+    未启用 / 白名单拒绝 / event_id 重复(reason 传拦截原因)。不然那三类就是
+    黑箱 —— 看起来像"根本没收到推送"，其实收到了只是被挡了。
+    注意只是"也记一份"，拦截逻辑本身不动。
+
+    msg=None 且没有 reason，表示过了闸但归一化不出来(不是消息事件)。
 
     默认关闭(debug.raw_push) —— 原文含客户对话全文，公网环境开之前想清楚。
+    ⚠️ 被拒绝的报文是**未经认证的外部输入**，前端渲染处已做 HTML 转义；
+    环形缓冲有上限，最坏情况是被刷屏挤掉真数据，所以查完记得关。
     """
     dbg = CONFIG.get("debug") or {}
     if not dbg.get("raw_push"):
         return
-    try:
-        raw = json.dumps(body, ensure_ascii=False, indent=1)
-    except Exception:
-        raw = repr(body)
+    if raw_text is not None and not body:
+        # 解析不出 JSON 的请求：解析结果是空 dict，原文只剩这里有。
+        # 留一条空记录等于什么都没说 —— 这个面板的全部意义就是"到底收到了什么"。
+        raw = raw_text or "(空请求体)"
+    else:
+        try:
+            raw = json.dumps(body, ensure_ascii=False, indent=1)
+        except Exception:
+            raw = repr(body)
     if len(raw) > 20000:
         raw = raw[:20000] + "\n… (已截断)"
     typ = int(((msg or {}).get("jjy") or {}).get("mt") or 0)
-    name = (TYPE_NAME.get(typ, "已归一化") if msg
-            else "未处理 · " + str(body.get("event_type") or "?"))
+    ev = str((body or {}).get("event_type") or "?") if isinstance(body, dict) else "?"
+    name = ("已拦截 · " + reason if reason else
+            TYPE_NAME.get(typ, "已归一化") if msg else "未处理 · " + ev)
     with _lock:
         _RAW_SEQ[0] += 1
         item = {"seq": _RAW_SEQ[0], "t": time.time(), "type": typ,
@@ -1330,9 +1349,14 @@ class Handler(BaseHTTPRequestHandler):
         self.end_headers()
         self.wfile.write(data)
 
-    def _read_json(self):
+    def _read_body_text(self):
+        """请求体原文。webhook 入口要它 —— 解析失败时 body 是空 dict，
+        原文只剩这里有，而"原始推送"面板的全部意义就是看到底收到了什么。"""
         n = int(self.headers.get("Content-Length", 0))
-        raw = self.rfile.read(n).decode("utf-8", "ignore") if n else ""
+        return self.rfile.read(n).decode("utf-8", "ignore") if n else ""
+
+    def _read_json(self):
+        raw = self._read_body_text()
         try:
             return json.loads(raw) if raw else {}
         except Exception:
@@ -1581,18 +1605,34 @@ class Handler(BaseHTTPRequestHandler):
         #                           在这儿做重活会超时->重推->消息重复
         if p == "/gw/jjy-hook":
             cfg = CONFIG.get("jjy") or {}
+            # 先读 body：下面每一道闸被拦时都要留一份原文(开了抓取的话)，
+            # 否则被拦的那些就是黑箱 —— 看着像没收到推送，其实是收到了被挡了。
+            # text 单独留着：解析不出 JSON 时 body 是空 dict，原文只剩它。
+            text = self._read_body_text()
+            try:
+                body = json.loads(text) if text.strip() else {}
+            except Exception:
+                body = {}
+            if not isinstance(body, dict):
+                body = {}
             if not cfg.get("enabled"):
+                _capture_jjy_raw(body, None, "webhook 接收未启用", text)
                 return self._send_json({}, 200)          # 未启用: 静默吞掉
-            body = self._read_json()
+            if not body:
+                _capture_jjy_raw(body, None, "请求体不是合法 JSON", text)
+                return self._send_json({}, 200)
             allow = cfg.get("allow_company") or []
             if allow and str(body.get("company_id") or "") not in allow:
                 with _lock:
                     JJY_STATS["rejected"] += 1
+                _capture_jjy_raw(body, None,
+                                 "company_id 不在白名单: %r" % body.get("company_id"), text)
                 # 故意回 200 而不是 403：不给扫描者任何"这里有东西"的反馈
                 return self._send_json({}, 200)
             if _jjy_seen(str(body.get("event_id") or "")):
                 with _lock:
                     JJY_STATS["dup"] += 1
+                _capture_jjy_raw(body, None, "event_id 重复", text)
                 return self._send_json({}, 200)
             with _lock:
                 JJY_STATS["received"] += 1
