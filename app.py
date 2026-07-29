@@ -1279,16 +1279,17 @@ def _wf_send(sid, text, quote_id="", mention=None):
     ⚠️ 引用只有企微代运营渠道支持，别的渠道语聚直接忽略这个字段 ——
     不会报错，就是没引用效果，所以这里不做渠道判断。
 
-    mention 就没这么客气了：这个字段一直只是**透传**，语聚认哪个 id 空间
-    文档里没写。实测推送的 user_id(32位hex) 是不认的，回 503；现在传的是
-    external_contact_id(企微那套人 id，16 位数字)。它不被认的话 jjy_send
-    直接判失败 —— 等于为了一个 @ 把整条回复搞没了。所以带 mention 发失败时
-    **摘掉它重发一次**：正文里的 "@张三" 前缀还在，只是没有真 @ 的红点。
+    mention 要的是**企微那套**人 id 的数组(external_contact_id)，实测过。
+    语聚会拿它去群成员表里查，查不到就整条发送失败(503 "the mention user(x)
+    is not in the room") —— 等于为了一个 @ 把整条回复搞没了。正常情况不会
+    发生(要 @ 的人就是刚在这个群说话的人)，但人退群、id 对不上都可能踩到，
+    所以带 mention 发失败时**摘掉它重发一次**：正文里的 "@张三" 前缀还在，
+    只是没有真 @ 的红点。
     """
     ok, err = send_text_ex(sid, text, quote_id=quote_id, mention=mention)
     if not ok and mention:
-        log.warning("带 @ 发送失败(%s)，摘掉 mention 重发 —— 语聚不认这个 id: %s"
-                    "（正文里的 @昵称 前缀不受影响）", err, mention)
+        log.warning("带 @ 发送失败(%s)，摘掉 mention 重发 —— %s 多半已经不在这个"
+                    "群里了（正文里的 @昵称 前缀不受影响）", err, mention)
         ok, _ = send_text_ex(sid, text, quote_id=quote_id)
     if ok:
         with _lock:
