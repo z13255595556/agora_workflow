@@ -1482,6 +1482,9 @@ class Handler(BaseHTTPRequestHandler):
             data = ("<h1>%s not found</h1>" % os.path.basename(file)).encode("utf-8")
         self.send_response(200)
         self.send_header("Content-Type", "text/html; charset=utf-8")
+        # 页面是每次请求现读磁盘的，就是为了 git pull 完立刻生效 —— 别让浏览器
+        # 缓存把这点好处吃掉，不然又是"页面看着是新的、其实是旧的"那种鬼故事
+        self.send_header("Cache-Control", "no-store")
         self.send_header("Content-Length", str(len(data)))
         self.end_headers()
         self.wfile.write(data)
