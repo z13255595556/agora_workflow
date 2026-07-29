@@ -401,12 +401,22 @@ def _jjy_call(path, body=None, api_key="", meta=None, throttle=False, **params):
                   or "语聚返回 Code=%s" % j.get("Code"))
 
 
-def _warn_drift(what, sid, prev):
-    """身份被新会话行接管 = 聚合 chat_id 变过。喊一声，否则它是无声的 ——
-    历史留在旧会话行里，工作台看着像凭空多出来一个同名会话。"""
-    if prev:
-        log.warning("%s 的会话 id 变了: %s -> %s（历史留在旧会话行，"
-                    "发送和匹配都会自动走新的）", what, "、".join(prev), sid)
+def _take_over(what, sid, prev):
+    """身份被新会话行接管 = 聚合 chat_id 变过。喊一声 + 把历史搬过来。
+
+    喊：否则漂移是无声的 —— 工作台看着像凭空多出来一个同名会话。
+    搬：不搬的话取消息得跨会话行 IN 查，漂移 N 次列表就有 N 项；搬完恒为 1 项。
+        旧行留成墓碑做重定向，不能删(老 sid 还散落在配置和前端里)。
+    搬失败也不影响正确性：merged_into 仍是空，读取侧退化成合并模式。
+    """
+    if not prev:
+        return
+    log.warning("%s 的会话 id 变了: %s -> %s", what, "、".join(prev), sid)
+    try:
+        n = STORE.absorb(sid, prev)
+        log.info("已把 %d 条历史消息并入新会话 %s（旧会话行留作重定向）", n, sid)
+    except Exception as e:
+        log.warning("历史消息并入失败，读取时会自动合并，不影响正确性: %s", e)
 
 
 def resolve_target(target):
@@ -1370,7 +1380,7 @@ def jjy_worker():
                     if not known:
                         ROOM_LINKED[sid] = key
                 if not known:
-                    _warn_drift("群 " + (jy.get("room_id") or ""), sid,
+                    _take_over("群 " + (jy.get("room_id") or ""), sid,
                                 STORE.link_room(sid, jy["room_id"],
                                                 jy.get("bot_id") or ""))
             # 私聊：对端就是发送人。自己发的那条对端是机器人自己，跳过。
@@ -1381,7 +1391,7 @@ def jjy_worker():
                     if not known:
                         PEER_LINKED[sid] = peer
                 if not known:
-                    _warn_drift("联系人 " + peer, sid, STORE.link_peer(sid, peer))
+                    _take_over("联系人 " + peer, sid, STORE.link_peer(sid, peer))
         except Exception as e:
             log.exception("语聚报文处理异常: %s", e)
         finally:

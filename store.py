@@ -149,7 +149,10 @@ class Store:
         for name, decl in (("room_id",  "TEXT NOT NULL DEFAULT ''"),  # = imRoomId
                            ("bot_id",   "TEXT NOT NULL DEFAULT ''"),  # = imBotId
                            # 私聊的身份，和群的 room_id 对称，见 link_peer()
-                           ("peer_uid", "TEXT NOT NULL DEFAULT ''")):
+                           ("peer_uid", "TEXT NOT NULL DEFAULT ''"),
+                           # 非空 = 这行是墓碑：消息已搬到 merged_into 那行，
+                           # 自己只留着做重定向(老 sid 还散落在配置和前端里)
+                           ("merged_into", "TEXT NOT NULL DEFAULT ''")):
             if name not in scols:
                 self._db.execute(
                     "ALTER TABLE sessions ADD COLUMN %s %s" % (name, decl))
@@ -197,10 +200,14 @@ class Store:
         return prev
 
     def siblings(self, session_id):
-        """同一身份下的全部会话行 id（含自己，按 rowid 升序）。
+        """同一身份下**还带着消息**的会话行 id（按 rowid 升序）。
 
         chat_id 漂移过的会话在库里是多行，但对用户来说那就是同一个人/同一个群 ——
-        取消息、清未读、列会话都得把它们当成一个，否则历史看起来凭空断了。
+        取消息、清未读都得把它们当成一个，否则历史看起来凭空断了。
+
+        墓碑行(merged_into 非空)排除在外：它们的消息已经被 absorb() 搬走了。
+        传进来的 sid 本身是墓碑也没关系 —— 身份一样，照样能找到接管它的那行。
+        正常情况下这里恒返回 1 个 id，多于 1 个只出现在 absorb 失败的时候。
         """
         sid = str(session_id or "")
         if not sid:
@@ -215,9 +222,49 @@ class Store:
             if not val:                      # 非企微渠道没有身份，只能就是它自己
                 return [sid]
             rows = self._db.execute(
-                "SELECT id FROM sessions WHERE %s=? ORDER BY rowid ASC" % col,
-                (val,)).fetchall()
+                "SELECT id FROM sessions WHERE %s=? AND merged_into=''"
+                " ORDER BY rowid ASC" % col, (val,)).fetchall()
         return [x["id"] for x in rows] or [sid]
+
+    def absorb(self, new_sid, old_sids):
+        """把旧会话行的消息/媒体搬到新行，旧行留成墓碑。返回搬走的消息条数。
+
+        为什么搬：不搬的话 get_messages 得 `session_id IN (...)`，一个会话漂移
+        N 次这个列表就有 N 项，是唯一会随漂移次数退化的地方。搬完之后恒为 1 项。
+
+        为什么旧行不删：老 sid 散落在 workflows.json、前端已打开的会话、SSE
+        客户端手里 —— 删了就再也解析不回来了。留一行墓碑做重定向，几十字节。
+
+        整个搬迁在一个事务里，失败就整体回滚 —— 那时 merged_into 仍是空，
+        siblings() 会把它算回来，读取侧退化成合并模式，结果依然正确。
+        """
+        old = [s for s in (old_sids or []) if s and s != new_sid]
+        if not (new_sid and old):
+            return 0
+        ph = ",".join("?" * len(old))
+        with self._lock:
+            try:
+                n = self._db.execute(
+                    "UPDATE messages SET session_id=? WHERE session_id IN (%s)" % ph,
+                    [new_sid] + old).rowcount
+                self._db.execute(
+                    "UPDATE media SET session_id=? WHERE session_id IN (%s)" % ph,
+                    [new_sid] + old)
+                # 未读要并过来，否则搬完角标就少了(墓碑行不再进列表)
+                row = self._db.execute(
+                    "SELECT SUM(unread) u FROM sessions WHERE id IN (%s)" % ph,
+                    old).fetchone()
+                self._db.execute(
+                    "UPDATE sessions SET unread=unread+? WHERE id=?",
+                    (int((row["u"] if row else 0) or 0), new_sid))
+                self._db.execute(
+                    "UPDATE sessions SET merged_into=?, unread=0 WHERE id IN (%s)" % ph,
+                    [new_sid] + old)
+                self._db.commit()
+            except Exception:
+                self._db.rollback()
+                raise
+        return n
 
     def latest_by_identity(self, room_id="", peer_uid=""):
         """按身份取**当前**可寻址的会话 id。取不到返回 ""。
@@ -234,7 +281,7 @@ class Store:
             return ""
         with self._lock:
             r = self._db.execute(
-                "SELECT id FROM sessions WHERE %s=?"
+                "SELECT id FROM sessions WHERE %s=? AND merged_into=''"
                 " ORDER BY rowid DESC LIMIT 1" % col, (val,)).fetchone()
         return r["id"] if r else ""
 
@@ -436,12 +483,16 @@ class Store:
         """会话列表。**按身份折叠** —— chat_id 漂移过的会话在库里是多行，但对用户
         来说那就是同一个人/同一个群，工作台不该看见两条同名会话。
 
+        墓碑行(消息已被 absorb 搬走)直接不列。正常情况下折叠逻辑不会命中 ——
+        它兜的是 absorb 失败、旧行还带着消息的那种情况。
+
         代表行取最后建出来的那个(= 当前地址，发消息认它)；未读求和；预览取最后
         活跃的那行。没有身份的(非企微渠道)各算各的。
         """
         with self._lock:
             rows = self._db.execute(
-                "SELECT * FROM sessions ORDER BY rowid ASC").fetchall()
+                "SELECT * FROM sessions WHERE merged_into=''"
+                " ORDER BY rowid ASC").fetchall()
         out, idx = [], {}
         for r in rows:
             d = self._sess_dict(r)
