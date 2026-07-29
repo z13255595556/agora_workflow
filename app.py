@@ -472,13 +472,32 @@ def jjy_send(conversation_id, message_type, message_content, meta=None, api_key=
     return False, err or "发送失败"
 
 
-def _record_sent(conversation_id, text):
+def _quote_rich(conversation_id, quote_id):
+    """自己发的引用消息，补录时也要带上引用块，不然入库那条只剩正文
+    （乐观气泡上那个引用块会被入库的这条替换掉，看着像"引用没生效"）。
+
+    被引用消息的发送人和原文从**自己库里**查(按内层 id)，不让前端传 ——
+    那是要展示给人看的内容，从库里取才和别处显示的一致。
+    """
+    if not (quote_id and STORE):
+        return None
+    src = STORE.find_by_qid(conversation_id, quote_id)
+    if not src:
+        return None
+    kind = {CT_IMAGE: "image", CT_GIF: "image", CT_FILE: "file",
+            CT_VIDEO: "video", CT_VOICE: "voice"}.get(src.get("msg_type"), "text")
+    return {"quote": {"id": str(quote_id),
+                      "sender": src.get("sender_name") or "",
+                      "content": src.get("content") or "",
+                      "mtype": kind}}
+
+
+def _record_sent(conversation_id, text, quote_id=""):
     """把自己发出去的消息补录进库。
 
-    ⚠️ 语聚**不会**把 OpenAPI 发出去的消息按 ai_assistant_receives_msg 推回来。
-    实测：工作台发一条，received +1 但 ignored 也 +1 —— 推是推了，事件类型
-    不是消息事件。所以不补录的话，前端那个气泡只是本地占位，一刷新就没了。
-    (语聚自己的 AI 规则发的回复倒是走消息事件，两条路不一样。)
+    ⚠️ 语聚**不会**把 OpenAPI 发出去的消息推回来（实测 sent +2 而 received 为 0，
+    同期别的推送照常进来）。所以不补录的话，前端那个气泡只是本地占位，
+    一刷新就没了。(语聚自己的 AI 规则发的回复倒是走消息事件，两条路不一样。)
 
     msg_id 用 local: 前缀的本地 id —— 发送接口的响应里没有 message_id，
     拿不到语聚那边的真 id 就引用不了也撤回不了，前端据此不给这两个按钮。
@@ -492,6 +511,7 @@ def _record_sent(conversation_id, text):
             "content": text, "time_stamp": int(time.time()),
             "msg_id": "local:" + uuid.uuid4().hex,
             "is_self_msg": 1, "at_me": 0, "sender_external": 0,
+            "rich": _quote_rich(conversation_id, quote_id),
             "jjy": {"mt": 2, "chat_id": jjy.raw_chat_id(conversation_id),
                     "local": True},
         })
@@ -520,7 +540,7 @@ def send_text_ex(conversation_id, msg, quote_id="", mention=None):
             JJY_STATS["send_err"] = err
     if ok:
         log.info("已发送 -> %s (%d 字)", conversation_id, len(text))
-        _record_sent(conversation_id, text)
+        _record_sent(conversation_id, text, quote_id)
     else:
         log.warning("发送失败 -> %s: %s", conversation_id, err)
     return ok, err

@@ -100,7 +100,7 @@ config.example.json   配置模板
 | 位置 | 形态 | 用途 |
 |---|---|---|
 | `message.message_id` | `api_<uuid>i` | 去重、撤回 |
-| `message_content.message_id` | 32 位 hex | **引用要填这个** —— `quote_message_id` 就是这个格式 |
+| `message_content.message_id` | 32 位 hex | **引用要填这个**（已实测：填内层 id，客户端才显示成引用） |
 
 **还有一个文档里没有的事件类型：`chat_finish`**（对话结束），和 `ai_assistant_receives_msg`
 走同一个回调地址。本程序按 `event_type` 区分，计入 `ignored` 而不是当成解析失败。
@@ -205,6 +205,10 @@ jjy_send(sid, 9, {"url": "https://.../a.png"})   # 9=图片 8=文件 3=语音
 
 所以发送成功后只做一件事：**本地补录一条**，`msg_id` 挂 `local:` 前缀的占位。
 不补录的话，前端那个气泡只是本地占位，一刷新就没了。
+
+带引用发送时，补录的那条也要带上引用块 —— 被引用消息的发送人和原文按内层 id
+**从自己库里查**（`store.find_by_qid`），不让前端传。不补的话，乐观气泡上那个
+引用块会被入库的这条替换掉，看着像"引用没生效"（客户端其实是好的）。
 
 `local:` 开头的消息前端不给操作条 —— 没有真 id，按钮点下去必然失败。
 
