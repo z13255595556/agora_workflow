@@ -81,7 +81,8 @@ def _norm_date(v):
 
 class WorkflowEngine:
     def __init__(self, base_dir, send_text, log, resolve_name=None, classify=None, store=None):
-        """send_text(sid, text, quote_id="")->bool 发消息(quote_id 非空则引用原消息)；
+        """send_text(sid, text, quote_id="", mention=None)->bool 发消息
+        (quote_id 非空则引用原消息；mention 是要 @ 的人 id 列表)；
         resolve_name(id)->str 显示名；
         classify(uid)->0内部/1外部/None未知(用户类型条件用)；
         store: Store 实例，用于持久化运行记录/累计统计(None 则退化为内存 deque)。"""
@@ -242,7 +243,8 @@ class WorkflowEngine:
                 a.setdefault("headers", "")
                 a.setdefault("extra", "")
                 a.setdefault("reply_path", "")
-                a["quote"] = bool(a.get("quote", True))
+                a["quote"]   = bool(a.get("quote", True))
+                a["mention"] = bool(a.get("mention", True))
                 a["ctx_mode"] = (a.get("ctx_mode")
                                  if a.get("ctx_mode") in ("count", "time") else "count")
                 a["ctx_count"]   = min(100, max(1, int(a.get("ctx_count") or 20)))
@@ -872,10 +874,23 @@ class WorkflowEngine:
 
         text = self._render(a.get("reply_template") or "{result}",
                             dict(ctx, result=result)).strip()
+        # 引用 + @ 都只在群里做。私聊是一对一：引用谁、@ 谁都是明摆着的，
+        # 加了只是噪音。
+        #
+        # @ 为什么正文前缀和结构化 mention 都给：前缀保证「看得见」——
+        # 语聚推过来的 @ 本来就是正文里的纯文本，at_me 就是这么认出来的；
+        # mention 争取「真被@到、有红点」，它不被认时 _wf_send 会摘掉重发，
+        # 不影响这条回复发出去。
+        ment, qid = None, ""
+        if sid.startswith("R:"):
+            if a.get("mention") and peer:
+                text = "@%s %s" % (ctx.get("sender_name") or peer, text)
+                ment = [peer]
+            if a.get("quote"):
+                qid = str(msg.get("msg_id") or "")
         if len(text) > MAX_REPLY_LEN:
             text = text[:MAX_REPLY_LEN] + "…"
-        qid = str(msg.get("msg_id") or "") if a.get("quote") else ""
-        if not self.send_text(sid, text, qid):
+        if not self.send_text(sid, text, qid, ment):
             return {"action": "ai", "ok": False, "detail": detail + " · 回复失败"}
 
         # 发出去了才落库。模型答了但没发成也不写 —— 对方根本没看见这句，

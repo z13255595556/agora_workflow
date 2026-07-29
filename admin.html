@@ -1234,7 +1234,7 @@ function renderEditor(){
     template:''});renderActions();};
   $('#btnAddHttp').onclick=()=>{collectActions();M.actions.push({type:'http',method:'GET',url:'',headers:'',body:'',
     timeout_sec:10,retries:1,reply:true,reply_path:'',reply_template:'{result}'});renderActions();};
-  $('#btnAddAi').onclick=()=>{collectActions();M.actions.push({type:'ai',bailian:true,quote:true,
+  $('#btnAddAi').onclick=()=>{collectActions();M.actions.push({type:'ai',bailian:true,quote:true,mention:true,
     url:'',app_id:'',api_key:'',headers:'',extra:'',reply_path:'',
     ctx_mode:'count',ctx_count:20,ctx_minutes:30,
     timeout_sec:60,retries:1,reply_template:'{result}'});renderActions();};
@@ -1368,8 +1368,10 @@ function renderActions(){
         <div class="ffield"><div class="lab">百炼专用
           <span class="tip">阿里云百炼(DashScope)应用接口；关掉走 OpenAI 兼容格式</span>
           <label class="sw"><input type="checkbox" class="aSw" data-i="${i}" data-k="bailian" ${bl?'checked':''}><span class="sl"></span></label></div></div>
-        <div class="ffield"><div class="lab">引用原消息回复<span class="tip">仅企微渠道生效，别的渠道会忽略</span>
-          <label class="sw"><input type="checkbox" class="aSw" data-i="${i}" data-k="quote" ${a.quote!==false?'checked':''}><span class="sl"></span></label></div></div></div>
+        <div class="ffield"><div class="lab">群里引用原消息<span class="tip">私聊不引用；仅企微渠道生效</span>
+          <label class="sw"><input type="checkbox" class="aSw" data-i="${i}" data-k="quote" ${a.quote!==false?'checked':''}><span class="sl"></span></label></div></div>
+        <div class="ffield"><div class="lab">群里 @ 提问的人<span class="tip">私聊不 @，一对一没必要</span>
+          <label class="sw"><input type="checkbox" class="aSw" data-i="${i}" data-k="mention" ${a.mention!==false?'checked':''}><span class="sl"></span></label></div></div></div>
       <div class="frow blBox ${bl?'':'hide'}" data-i="${i}">
         <div class="ffield"><div class="lab">应用 ID<span class="tip">百炼控制台的 appId</span></div>
           <input type="text" class="aIn" data-i="${i}" data-k="app_id" value="${esc(a.app_id||'')}" style="font-family:var(--mono)"></div>

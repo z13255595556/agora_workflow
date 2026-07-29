@@ -1272,14 +1272,24 @@ def health_loop():
 
 
 # ============================ 工作流引擎接入 ============================
-def _wf_send(sid, text, quote_id=""):
+def _wf_send(sid, text, quote_id="", mention=None):
     """工作流引擎的发送出口：发成功计入回复统计。
 
     quote_id = 触发消息的 msg_id，非空就引用它回复（AI 回复默认开着）。
     ⚠️ 引用只有企微代运营渠道支持，别的渠道语聚直接忽略这个字段 ——
     不会报错，就是没引用效果，所以这里不做渠道判断。
+
+    mention 就没这么客气了：这个字段一直只是**透传**，从没有前端用过，
+    语聚认哪个 id 空间也没验证过。万一它不认，jjy_send 会拿到 Code=4000
+    直接判失败 —— 那就等于为了一个 @ 把整条回复搞没了。所以带 mention
+    发失败时**摘掉它重发一次**，并把这件事喊出来：日志里出现这行，就说明
+    id space 猜错了，换 external_contact_id 再试。
     """
-    ok, _ = send_text_ex(sid, text, quote_id=quote_id)
+    ok, err = send_text_ex(sid, text, quote_id=quote_id, mention=mention)
+    if not ok and mention:
+        log.warning("带 @ 发送失败(%s)，摘掉 mention 重发 —— 语聚可能不认这个 "
+                    "id 空间(现在传的是推送里的 user_id): %s", err, mention)
+        ok, _ = send_text_ex(sid, text, quote_id=quote_id)
     if ok:
         with _lock:
             STATS["forwarded"] += 1
