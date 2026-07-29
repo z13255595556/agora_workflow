@@ -62,15 +62,22 @@ RICH_KEYS = ("title", "cover", "link", "url", "address", "name",
 
 
 def _unwrap(mtype, mc):
-    """type 8/12 的 message_content.text 是**一段 JSON 字符串**，要再解一层。
+    """message_content.text 有时是**一段 JSON 字符串**，要再解一层。
 
         8  -> {"fileUrl": "...", "name": "xx.log", "size": 1036562}
         12 -> {"chatHistoryList": [...], "title": "A和B的聊天记录"}
+        引用回复(任何类型都可能，实测 type 2 就有):
+           -> {"text": "test", "quote_message": {"quote_message_id": "...",
+                "sender": "...", "content": "...", "quote_message_type": "text"}}
 
-    这两条都不在官方文档里(8 号连枚举都没有)，是从真实推送里扒出来的。
-    解析失败就原样返回，退化成纯文本展示，不会丢消息。
+    这几条都不在官方文档里(8 号连枚举都没有)，是从真实推送里扒出来的。
+    不解这一层的话，界面上那条消息显示的就是这一整串 JSON 原文。
+
+    ⚠️ 8/12 按类型确定；引用则**按有没有 quote_message 判定**，不能见到
+    type 2 的 text 以 { 开头就解 —— 用户真发一段 JSON 文本会被拆掉。
+    解析失败一律原样返回，退化成纯文本展示，不会丢消息。
     """
-    if mtype not in (8, 12) or not isinstance(mc, dict):
+    if not isinstance(mc, dict):
         return mc
     t = mc.get("text")
     if not isinstance(t, str) or not t.lstrip().startswith("{"):
@@ -79,7 +86,11 @@ def _unwrap(mtype, mc):
         inner = json.loads(t)
     except Exception:
         return mc
-    return dict(mc, **inner) if isinstance(inner, dict) else mc
+    if not isinstance(inner, dict):
+        return mc
+    if mtype in (8, 12) or "quote_message" in inner:
+        return dict(mc, **inner)
+    return mc
 
 
 def _history_text(mc):
@@ -259,6 +270,30 @@ def normalize(body, bot_name=""):
                        "history": mc["chatHistoryList"][:50]}
     elif rich and mtype in (4, 5, 7, 11):
         out["rich"] = rich
+
+    # 引用回复。⚠️ 官方文档里没有这个结构，实测才有：
+    #   "message_content": {"text": "开启了吧？", "quote_message": {
+    #       "quote_message_id": "...", "sender": "刘雨欣",
+    #       "content": "传统降噪是默认开启的", "quote_message_type": "text"}}
+    # 不存的话，一条引用回复看起来就是条普通消息，上下文全丢。
+    # 任何消息类型都可能带，所以独立于上面那几个 mtype 分支处理。
+    q = mc.get("quote_message") if isinstance(mc, dict) else None
+    if isinstance(q, dict) and (q.get("content") or q.get("quote_message_id")):
+        out.setdefault("rich", {})["quote"] = {
+            "id": str(q.get("quote_message_id") or ""),
+            "sender": q.get("sender") or "",
+            "content": (q.get("content") or "").strip(),
+            "mtype": q.get("quote_message_type") or "",
+        }
+
+    # 要引用这条消息时, quoteMessageId 该填哪个 —— 报文里有**两个** message_id:
+    #   message.message_id          "api_<uuid>i"  ← 我们当 msg_id 用(去重/撤回)
+    #   message_content.message_id  32 位 hex      ← 引用块里的 quote_message_id 就是这个格式
+    # 实测同一条报文里 quote_message_id 和 message_content.message_id 同款(32位hex)，
+    # 和外层那个完全不同 —— 所以引用要用内层的。
+    inner_id = str(mc.get("message_id") or "") if isinstance(mc, dict) else ""
+    if inner_id:
+        out.setdefault("rich", {})["qid"] = inner_id
 
     return out
 

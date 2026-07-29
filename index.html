@@ -178,6 +178,10 @@
             font-size:12px;line-height:1.5;color:var(--text-3);
             display:-webkit-box;-webkit-line-clamp:2;-webkit-box-orient:vertical;overflow:hidden}
   .wa-row.me .wa-quote{border-left-color:rgba(255,255,255,.4);color:rgba(255,255,255,.75)}
+  /* solo：媒体气泡 padding 为 0，引用块只能单独挂在上面，得自带底色 */
+  .wa-quote.solo{background:var(--panel);border-radius:8px;padding:6px 10px 6px 8px;
+                 max-width:290px;box-shadow:0 1px 2px rgba(15,18,26,.05)}
+  .wa-row.me .wa-quote.solo{border-left-color:var(--border-2);color:var(--text-3)}
   .qbar{display:flex;align-items:center;gap:8px;padding:7px 12px;margin-bottom:8px;
         background:var(--panel);border-radius:9px;border-left:2px solid var(--brand)}
   .qbar .qtx{flex:1;min-width:0;font-size:12px;color:var(--text-2);
@@ -598,6 +602,12 @@ function richHTML(m){
   return '';        // 红包/图文等没有可点内容，保持纯文字占位
 }
 
+// 引用块。被引用的消息如果不是文本(图片/文件等)，content 是空的，给个占位。
+function quoteHTML(q,cls){
+  const t=q.content||({image:'[图片]',file:'[文件]',video:'[视频]',
+                       voice:'[语音]'}[q.mtype]||'[非文本消息]');
+  return `<div class="wa-quote${cls}">${q.sender?esc(q.sender)+'：':''}${esc(t)}</div>`;
+}
 function bubbleHTML(m,prev){
   let html='';
   const dv=needDivider(m,prev);
@@ -613,16 +623,24 @@ function bubbleHTML(m,prev){
   const who=(cur.is_group&&!me&&!grp)
     ?`<div class="wa-who">${esc(m.sender_name||m.sender)}</div>`:'';
   const rich=m.rich?richHTML(m):'';
+  // 引用回复：报文里带被引用消息的发送人和正文(见 jjy.py 的 quote_message)。
+  // 文本消息放进气泡里，媒体消息的气泡 padding 是 0，只能单独放在上面。
+  const q=m.rich&&m.rich.quote;
+  const qIn=q?quoteHTML(q,''):'';
+  const qUp=q?quoteHTML(q,' solo'):'';
   const body=m.media
-    ? `<div class="wa-bubble media" data-mkey="${m.media.id}">${mediaHTML(m)}</div>`
-    : rich ? `<div class="wa-bubble media">${rich}</div>`
-    : `<div class="wa-bubble">${esc(m.content)}</div>`;
+    ? `${qUp}<div class="wa-bubble media" data-mkey="${m.media.id}">${mediaHTML(m)}</div>`
+    : rich ? `${qUp}<div class="wa-bubble media">${rich}</div>`
+    : `<div class="wa-bubble">${qIn}${esc(m.content)}</div>`;
   // 引用和撤回都要拿语聚那边的 message_id 去调接口，而那个 id **只有推送里有**：
   // 发送接口的响应不给 message_id，语聚也不回推 API 发出去的消息(实测)。
   // 所以自己发的那条挂的是 local: 占位 id，操作条直接不给 —— 给了必然失败。
   const rid=(m.id&&!String(m.id).startsWith('local:'))?m.id:'';
+  // 引用和撤回填的**不是同一个 id**：报文里有两个 message_id，引用块里的
+  // quote_message_id 用的是内层那个(见 jjy.py 的 qid)，撤回用外层的。
+  const qid=(m.rich&&m.rich.qid)||rid;
   const ops=rid?`<div class="wa-ops">`
-    +`<button data-quote="${esc(rid)}">引用</button>`
+    +`<button data-quote="${esc(qid)}">引用</button>`
     +(me?`<button class="danger" data-revoke="${esc(rid)}">撤回</button>`:'')
     +`</div>`:'';
   html+=`<div class="wa-row ${me?'me':''} ${grp?'grp':''}" data-seq="${m.seq}">
@@ -739,7 +757,8 @@ $('#waMsgs').addEventListener('scroll',()=>{ if(opsRow) opsHide(); });
 // ==================== 引用 ====================
 let quoting=null;          // {id,name,text} 待发送的引用目标
 function setQuote(mid){
-  const m=msgs.find(x=>x.id===mid);
+  // 按钮上带的是 qid(内层 id)，不一定等于 m.id，两个都比一下
+  const m=msgs.find(x=>((x.rich&&x.rich.qid)||x.id)===mid);
   if(!m) return;
   quoting={id:mid, name:(m.is_self?'我':(m.sender_name||m.sender||'对方')),
            text:(m.content||'[非文本消息]').slice(0,80)};

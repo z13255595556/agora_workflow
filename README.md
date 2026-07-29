@@ -79,14 +79,28 @@ config.example.json   配置模板
 | `message_trigger_type: 1` = "API" | 实际 `message_trigger_name` 是「AI智能体回复」 |
 | `message_type` 枚举跳过了 8 | **8 = 文件消息**，文档里根本没有这个号 |
 
-**两种消息的 `message_content.text` 是一段 JSON 字符串，要再解一层**（文档只说是 text）：
+**`message_content.text` 有时是一段 JSON 字符串，要再解一层**（文档只说是 text）。
+不解的话，界面上那条消息显示的就是这一整串 JSON 原文：
 
 ```jsonc
 // type 8 文件
 {"text": "{\"fileUrl\":\"https://...\",\"name\":\"a.log\",\"size\":1036562}"}
 // type 12 合并转发的聊天记录
 {"text": "{\"chatHistoryList\":[...],\"title\":\"A和B的聊天记录\"}"}
+// 引用回复 —— 任何类型都可能, 实测 type 2 就有
+{"text": "{\"text\":\"开启了吧？\",\"quote_message\":{\"quote_message_id\":\"...\",
+           \"sender\":\"刘雨欣\",\"content\":\"...\",\"quote_message_type\":\"text\"}}"}
 ```
+
+8/12 按类型确定；引用**按有没有 `quote_message` 判定** —— 不能见到 type 2 的 text
+以 `{` 开头就解，用户真发一段 JSON 文本会被拆掉。
+
+**报文里有两个 `message_id`，别混：**
+
+| 位置 | 形态 | 用途 |
+|---|---|---|
+| `message.message_id` | `api_<uuid>i` | 去重、撤回 |
+| `message_content.message_id` | 32 位 hex | **引用要填这个** —— `quote_message_id` 就是这个格式 |
 
 **还有一个文档里没有的事件类型：`chat_finish`**（对话结束），和 `ai_assistant_receives_msg`
 走同一个回调地址。本程序按 `event_type` 区分，计入 `ignored` 而不是当成解析失败。
@@ -173,9 +187,10 @@ jjy_send(sid, 9, {"url": "https://.../a.png"})   # 9=图片 8=文件 3=语音
 
 工作台里鼠标悬停在气泡上会出现操作条：
 
-- **引用** —— 发送时带上 `quoteMessageId`。⚠️ **只有企微代运营渠道支持**，
-  其他渠道语聚静默忽略，不报错也不生效。另外语聚的报文里**没有引用结构**，
-  所以界面上只有"发送中"那个气泡画得出引用块，入库后就是普通气泡了。
+- **引用** —— 发送时带上 `quoteMessageId`（填的是上表里**内层**那个 id）。
+  ⚠️ 只有企微代运营渠道支持，其他渠道语聚静默忽略，不报错也不生效。
+  **收到的引用回复会画出引用块** —— 报文里带 `quote_message`（发送人 + 被引用正文），
+  见 `jjy.py`。被引用的是图片/文件时 `content` 为空，前端出 `[图片]` 这类占位。
 - **撤回** —— `POST /v1/openapi/aggregate/message/revoke`，只对自己发的消息给。
   官方只写了**支持小红书和企业微信**，别的渠道会返回 4000。撤回成功后本地自己
   标记 + 广播 —— 语聚不会推撤回回声。
