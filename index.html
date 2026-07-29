@@ -635,12 +635,12 @@ function bubbleHTML(m,prev){
   // 引用和撤回都要拿语聚那边的 message_id 去调接口，而那个 id **只有推送里有**：
   // 发送接口的响应不给 message_id，语聚也不回推 API 发出去的消息(实测)。
   // 所以自己发的那条挂的是 local: 占位 id，操作条直接不给 —— 给了必然失败。
+  // 引用和撤回都填 msg_id(报文里 message.message_id 那个 "api_<uuid>i")。
+  // ⚠️ 别改成 message_content.message_id —— 收到的引用块里 quote_message_id
+  // 确实是那个 32 位 hex，但发送接口的 quoteMessageId 不认它(A/B 实测过)。
   const rid=(m.id&&!String(m.id).startsWith('local:'))?m.id:'';
-  // 引用和撤回填的**不是同一个 id**：报文里有两个 message_id，引用块里的
-  // quote_message_id 用的是内层那个(见 jjy.py 的 qid)，撤回用外层的。
-  const qid=(m.rich&&m.rich.qid)||rid;
   const ops=rid?`<div class="wa-ops">`
-    +`<button data-quote="${esc(qid)}">引用</button>`
+    +`<button data-quote="${esc(rid)}">引用</button>`
     +(me?`<button class="danger" data-revoke="${esc(rid)}">撤回</button>`:'')
     +`</div>`:'';
   html+=`<div class="wa-row ${me?'me':''} ${grp?'grp':''}" data-seq="${m.seq}">
@@ -757,8 +757,7 @@ $('#waMsgs').addEventListener('scroll',()=>{ if(opsRow) opsHide(); });
 // ==================== 引用 ====================
 let quoting=null;          // {id,name,text} 待发送的引用目标
 function setQuote(mid){
-  // 按钮上带的是 qid(内层 id)，不一定等于 m.id，两个都比一下
-  const m=msgs.find(x=>((x.rich&&x.rich.qid)||x.id)===mid);
+  const m=msgs.find(x=>x.id===mid);
   if(!m) return;
   quoting={id:mid, name:(m.is_self?'我':(m.sender_name||m.sender||'对方')),
            text:(m.content||'[非文本消息]').slice(0,80)};

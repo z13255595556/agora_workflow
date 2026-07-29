@@ -163,26 +163,15 @@ class Store:
                 (room_id, bot_id or "", session_id, room_id, bot_id or ""))
             self._db.commit()
 
-    def find_by_qid(self, session_id, qid, limit=300):
-        """按**内层** message_id(rich.qid)找一条消息。
-
-        引用填的是内层 id，而 msg_id 列存的是外层那个(api_<uuid>i)，
-        所以没法直接查 —— 只能翻最近几百条的 rich。调用点只有"补录自己发的
-        引用消息"一处，不在热路径上。
-        """
-        if not (session_id and qid):
+    def get_by_msg_id(self, session_id, msg_id):
+        """按 msg_id 取一条消息。走 (session_id, msg_id) 唯一索引。"""
+        if not (session_id and msg_id):
             return None
         with self._lock:
-            rows = self._db.execute(
-                "SELECT * FROM messages WHERE session_id=? AND rich!=''"
-                " ORDER BY seq DESC LIMIT ?", (session_id, int(limit))).fetchall()
-        for r in rows:
-            try:
-                if (json.loads(r["rich"]) or {}).get("qid") == str(qid):
-                    return self._msg_dict(r)
-            except Exception:
-                continue
-        return None
+            r = self._db.execute(
+                "SELECT * FROM messages WHERE session_id=? AND msg_id=?",
+                (session_id, str(msg_id))).fetchone()
+        return self._msg_dict(r) if r else None
 
     def room_map(self):
         """{imRoomId: 内部 session_id}。群列表接口的返回靠它映射回本地会话。"""

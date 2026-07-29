@@ -476,12 +476,12 @@ def _quote_rich(conversation_id, quote_id):
     """自己发的引用消息，补录时也要带上引用块，不然入库那条只剩正文
     （乐观气泡上那个引用块会被入库的这条替换掉，看着像"引用没生效"）。
 
-    被引用消息的发送人和原文从**自己库里**查(按内层 id)，不让前端传 ——
+    被引用消息的发送人和原文从**自己库里**查，不让前端传 ——
     那是要展示给人看的内容，从库里取才和别处显示的一致。
     """
     if not (quote_id and STORE):
         return None
-    src = STORE.find_by_qid(conversation_id, quote_id)
+    src = STORE.get_by_msg_id(conversation_id, quote_id)
     if not src:
         return None
     kind = {CT_IMAGE: "image", CT_GIF: "image", CT_FILE: "file",

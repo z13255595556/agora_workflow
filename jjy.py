@@ -277,6 +277,11 @@ def normalize(body, bot_name=""):
     #       "content": "传统降噪是默认开启的", "quote_message_type": "text"}}
     # 不存的话，一条引用回复看起来就是条普通消息，上下文全丢。
     # 任何消息类型都可能带，所以独立于上面那几个 mtype 分支处理。
+    # ⚠️ quote.id 只作留档，**别拿它当发送时的 quoteMessageId**。
+    # 报文里有两个 message_id，收到的引用块用的是内层那套：
+    #   message.message_id          "api_<uuid>i"  ← 发送接口的 quoteMessageId 认这个
+    #   message_content.message_id  32 位 hex      ← quote_message_id 和它同款
+    # 两个长得像但不通用 —— A/B 实测过：外层 id 客户端显示成引用，内层不显示。
     q = mc.get("quote_message") if isinstance(mc, dict) else None
     if isinstance(q, dict) and (q.get("content") or q.get("quote_message_id")):
         out.setdefault("rich", {})["quote"] = {
@@ -285,15 +290,6 @@ def normalize(body, bot_name=""):
             "content": (q.get("content") or "").strip(),
             "mtype": q.get("quote_message_type") or "",
         }
-
-    # 要引用这条消息时, quoteMessageId 该填哪个 —— 报文里有**两个** message_id:
-    #   message.message_id          "api_<uuid>i"  ← 我们当 msg_id 用(去重/撤回)
-    #   message_content.message_id  32 位 hex      ← 引用块里的 quote_message_id 就是这个格式
-    # 实测同一条报文里 quote_message_id 和 message_content.message_id 同款(32位hex)，
-    # 和外层那个完全不同 —— 所以引用要用内层的。
-    inner_id = str(mc.get("message_id") or "") if isinstance(mc, dict) else ""
-    if inner_id:
-        out.setdefault("rich", {})["qid"] = inner_id
 
     return out
 
