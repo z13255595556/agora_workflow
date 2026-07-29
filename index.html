@@ -929,6 +929,7 @@ function connectSSE(){
     if(ev.type==='message') onLive(ev);
     else if(ev.type==='media') onMedia(ev);
     else if(ev.type==='revoke') onRevoke(ev);
+    else if(ev.type==='msg_update') onMsgUpdate(ev);
     else if(ev.type==='raw_push') onRawPush(ev.item);
     else if(ev.type==='read'){
       const s=sessions.find(x=>x.id===ev.session_id);
@@ -956,6 +957,16 @@ async function resync(){
       if(!atB){ newCount+=fresh.length; updateNewPill(); }
     }
   }catch(e){}
+}
+// 原地替换一条已有消息(不动滚动位置)。目前只有一个用途：后台回查拿到真
+// message_id 后把补录的那条换掉，引用/撤回按钮随之出现，不用刷新页面。
+function onMsgUpdate(ev){
+  const m=ev.message;
+  if(!m||!cur||cur.id!==ev.session_id) return;
+  const i=msgs.findIndex(x=>x.seq===m.seq);
+  if(i<0) return;
+  msgs[i]=m;
+  render(false);
 }
 function onLive(ev){
   if(ev.session) upsertSession(ev.session);

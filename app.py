@@ -521,6 +521,7 @@ def send_text_ex(conversation_id, msg, quote_id="", mention=None):
     if ok:
         log.info("已发送 -> %s (%d 字)", conversation_id, len(text))
         _record_sent(conversation_id, text)
+        schedule_backfill(conversation_id)   # 几秒后回查, 把占位 id 换成真的
     else:
         log.warning("发送失败 -> %s: %s", conversation_id, err)
     return ok, err
@@ -529,6 +530,83 @@ def send_text_ex(conversation_id, msg, quote_id="", mention=None):
 def send_text(conversation_id, msg):
     """工作流引擎约定的发送出口：send_text(sid, text) -> bool。"""
     return send_text_ex(conversation_id, msg)[0]
+
+
+def jjy_history(conversation_id):
+    """回查整段会话内容。POST /v1/openapi/chat/history/detail {"chat_id": ...}
+
+    返回 (message 列表, err)。⚠️ 这接口**没有分页也没有时间范围** ——
+    传一个 chat_id 就把整段对话都吐回来，活跃群会很大。所以只在需要时调，
+    别放进消息主链路。列表是**新的在前**。
+    """
+    chat_id = jjy.raw_chat_id(conversation_id)
+    if not chat_id:
+        return [], "会话 id 为空"
+    data, err = _jjy_call("/v1/openapi/chat/history/detail", {"chat_id": chat_id})
+    if err:
+        return [], err
+    return [m for m in ((data or {}).get("message") or []) if isinstance(m, dict)], ""
+
+
+# ---- 把补录消息的占位 id 换成语聚那边的真 message_id ----
+# 发送接口的响应里没有 message_id，语聚也不回推自己发的消息(实测 sent+2 / received 0)，
+# 所以唯一的来源就是回查会话内容。没有真 id 就撤回不了、引用不了自己发的消息。
+BACKFILL_Q     = queue.Queue()
+BACKFILL_WAIT  = set()             # 已排队的会话，避免连发几条排一堆重复任务
+BACKFILL_DELAY = 4                 # 秒。刚发完立刻查，语聚那边可能还没落库
+
+def schedule_backfill(session_id):
+    with _lock:
+        if session_id in BACKFILL_WAIT:
+            return
+        BACKFILL_WAIT.add(session_id)
+    BACKFILL_Q.put(session_id)
+
+
+def backfill_worker():
+    while True:
+        sid = BACKFILL_Q.get()
+        try:
+            time.sleep(BACKFILL_DELAY)
+            with _lock:
+                BACKFILL_WAIT.discard(sid)      # 放在查之前：这期间再发的会重新排队
+            pend = STORE.local_msgs(sid) if STORE else []
+            if not pend:
+                continue
+            hist, err = jjy_history(sid)
+            if err:
+                log.warning("回查会话内容失败 %s: %s", sid, err)
+                continue
+            # 语聚返回的是新的在前，翻过来和本地(旧的在前)同序，好按顺序配对
+            outs = [m for m in reversed(hist)
+                    if m.get("message_forward_type") == "outgoing"]
+            used, fixed = set(), set()
+            for p in pend:
+                for i, m in enumerate(outs):
+                    if i in used:
+                        continue
+                    mc = m.get("message_content")
+                    txt = mc.get("text") if isinstance(mc, dict) else ""
+                    # 只按正文配对：本地时间和语聚的落库时间对不齐，不能拿时间卡。
+                    # 同一句话连发两遍时按先后顺序一一对应(used 保证不重复认领)。
+                    if str(txt or "") != p["content"]:
+                        continue
+                    mid = str(m.get("message_id") or "")
+                    if mid and STORE.set_msg_id(p["seq"], mid):
+                        used.add(i)
+                        fixed.add(p["seq"])
+                    break
+            if fixed:
+                log.info("已回填 %d 条消息的 message_id: %s", len(fixed), sid)
+                # 通知前台换掉这几条，撤回/引用按钮才会出现(不用刷新)
+                for m in STORE.get_messages(sid, limit=200)[0]:
+                    if m["seq"] in fixed:
+                        BUS.publish({"type": "msg_update",
+                                     "session_id": sid, "message": m})
+        except Exception as e:
+            log.warning("回填 message_id 异常 %s: %s", sid, e)
+        finally:
+            BACKFILL_Q.task_done()
 
 
 def jjy_revoke(conversation_id, message_id):
@@ -1680,6 +1758,7 @@ def main():
     # worker 无条件常驻：enabled 是在 HTTP 入口处判断的，这样管理页上开关一拨就生效，
     # 不用重启。worker 平时阻塞在队列上，不占 CPU。
     threading.Thread(target=jjy_worker, name="jjy", daemon=True).start()
+    threading.Thread(target=backfill_worker, name="backfill", daemon=True).start()
     if jc.get("enabled") and not (jc.get("allow_company") or []):
         log.warning("语聚 webhook 已启用但 allow_company 为空 —— 任何人 POST 都会被当成真消息，"
                     "公网环境务必配上 company_id 白名单")

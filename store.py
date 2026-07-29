@@ -163,6 +163,32 @@ class Store:
                 (room_id, bot_id or "", session_id, room_id, bot_id or ""))
             self._db.commit()
 
+    def local_msgs(self, session_id, limit=20):
+        """本地补录、还没换到真 message_id 的消息(旧的在前)。
+
+        发送接口不返回 message_id，语聚也不回推自己发的消息 ——
+        这些行先挂个 local: 前缀的占位 id，之后靠回查会话内容换成真的。
+        """
+        with self._lock:
+            rows = self._db.execute(
+                "SELECT seq, content, ts FROM messages"
+                " WHERE session_id=? AND msg_id LIKE 'local:%'"
+                " ORDER BY seq LIMIT ?", (session_id, int(limit))).fetchall()
+        return [{"seq": r["seq"], "content": r["content"], "ts": r["ts"]} for r in rows]
+
+    def set_msg_id(self, seq, msg_id):
+        """给某条消息换 msg_id。真 id 已被别的行占用时不动(唯一索引会拦)。"""
+        if not msg_id:
+            return False
+        with self._lock:
+            try:
+                cur = self._db.execute(
+                    "UPDATE messages SET msg_id=? WHERE seq=?", (str(msg_id), int(seq)))
+                self._db.commit()
+                return cur.rowcount > 0
+            except sqlite3.IntegrityError:
+                return False                      # 已经有一行是这个 id 了
+
     def room_map(self):
         """{imRoomId: 内部 session_id}。群列表接口的返回靠它映射回本地会话。"""
         with self._lock:
