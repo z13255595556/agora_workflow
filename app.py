@@ -621,38 +621,19 @@ def jjy_revoke(conversation_id, message_id):
 
 
 CONTACTS_CACHE = {"at": 0, "list": []}
-CONTACTS_TTL   = 600
 
 # ---------------------------------------------------------------------------
-# 通讯录/群列表的"启动先读库，同步只是更新"
+# 通讯录/群列表：**只读本地，只有手动同步才回源**
 #
-# 这两份数据来自语聚接口，以前只活在上面这两个内存字典里 —— 进程一重启就空，
-# 管理页第一次打开得干等上游翻几十页(群 100/页最多 50 页、联系人 500/页最多
-# 20 页)，等不及点「同步通讯录」也还是同一份等待。
+# 这两份数据来自语聚接口。它们不是消息，不会自己变着变着就过期成错的，
+# 所以不搞 TTL、不搞后台定时刷 —— 上游请求只发生在人明确点了按钮的时候：
+#   「同步通讯录」 -> /gw/sync-contacts   (群列表 + 联系人)
+#   「刷新群成员」 -> /gw/members refresh (群列表)
+# 其余所有读取(打开管理页、开工作流编辑器、发消息前查名字)一律走 directory
+# 表的快照 + 进程内缓存，一个网络请求都不发。
 #
-# 现在多一层：拉到就写进 directory 表，启动时 directory_boot() 把它读回内存。
-#   * 手里有货(哪怕是过期的库存)  -> 立刻返回，顺手让后台线程去刷
-#   * 手里一条都没有 / 用户点了同步 -> 才在请求线程里干等上游
-# 也就是说上游刷新退化成纯粹的"更新"，从来不挡着人用。
-_DIR_REFRESHING = threading.Event()
-
-def _dir_refresh_bg():
-    """后台刷通讯录+群列表。同一时刻只跑一个，别让并发请求各起一个线程。"""
-    if _DIR_REFRESHING.is_set():
-        return
-    _DIR_REFRESHING.set()
-
-    def run():
-        try:
-            jjy_group_list(force=True)     # force 会跳过下面的"先给库存"分支
-            jjy_contacts(force=True)
-        except Exception as e:
-            log.warning("后台刷新通讯录失败: %s", e)
-        finally:
-            _DIR_REFRESHING.clear()
-    threading.Thread(target=run, name="dir-refresh", daemon=True).start()
-
-
+# 代价说清楚：新建的群、新加的人，不点同步就不会出现。这是有意的 ——
+# 宁可你自己决定什么时候更新，也不要一次打开页面卡在那儿翻几十页。
 def _dir_save(kind, items, full):
     """快照落库。失败只记一笔 —— 内存缓存已经更新了，不影响这次请求。"""
     if not STORE:
@@ -664,26 +645,24 @@ def _dir_save(kind, items, full):
 
 
 def directory_boot():
-    """启动时把库里的通讯录/群列表快照读进内存，再让后台去刷新。"""
+    """启动时把库里的通讯录/群列表快照读进内存。不回源。"""
     if not STORE:
         return
     try:
         gl, gat = STORE.load_directory("group")
         cl, cat = STORE.load_directory("contact")
     except Exception as e:
-        log.warning("读取通讯录快照失败，退回启动后现拉: %s", e)
+        log.warning("读取通讯录快照失败: %s", e)
         return
     with _lock:
-        if gl:
-            GROUPS_CACHE.update({"at": gat, "list": gl})
-        if cl:
-            CONTACTS_CACHE.update({"at": cat, "list": cl})
+        GROUPS_CACHE.update({"at": gat, "list": gl})
+        CONTACTS_CACHE.update({"at": cat, "list": cl})
     if gl or cl:
-        log.info("通讯录快照已载入: 群 %d, 联系人 %d（快照时间 %s）",
+        log.info("通讯录快照已载入: 群 %d, 联系人 %d（上次同步 %s）",
                  len(gl), len(cl),
                  time.strftime("%m-%d %H:%M", time.localtime(max(gat, cat))))
-    if ((CONFIG.get("jjy") or {}).get("api_key") or "").strip():
-        _dir_refresh_bg()          # 配了 apiKey 才刷，否则每次启动白报一条错
+    else:
+        log.info("通讯录快照为空 —— 到管理后台点一次「同步通讯录」再用选人面板")
 
 
 def jjy_contacts(force=False):
@@ -695,11 +674,7 @@ def jjy_contacts(force=False):
     """
     with _lock:
         have = list(CONTACTS_CACHE["list"])
-        fresh = (time.time() - CONTACTS_CACHE["at"]) < CONTACTS_TTL
-    # 手里有货就先给出去 —— 启动时那份是从库里读的，过期了也照给，顺手让后台刷
-    if have and not force:
-        if not fresh:
-            _dir_refresh_bg()
+    if not force:                 # 只有点了同步(force)才回源，其余一律读快照
         return have, ""
 
     out, page, err = [], 0, ""
@@ -807,17 +782,13 @@ def sender_id_migration(contacts, apply=False):
 #   2) 它返回的 imRoomId 形如 "R:10942308524386327"，和聚合对话的 chat_id
 #      (UUID 形态)**不是一个 id 空间**。要映射回本地会话只能靠推送里的
 #      source_addition.room_id —— 也就是说，只有来过消息的群才对得上。
-GROUPS_CACHE = {"at": 0, "list": [], "err": ""}   # {at, list:[群], err}
-GROUPS_TTL   = 600                                # 秒。群列表不会分秒必变
+GROUPS_CACHE = {"at": 0, "list": [], "err": ""}   # at = 上次**同步**时间, 不是过期钟
 
 def jjy_group_list(force=False):
     """拉全量群列表(自动翻页)。返回 (list, err)，list 里每项是接口原样的群对象。"""
     with _lock:
         have = list(GROUPS_CACHE["list"])
-        fresh = (time.time() - GROUPS_CACHE["at"]) < GROUPS_TTL
-    if have and not force:                 # 同 jjy_contacts：先给库存，过期让后台刷
-        if not fresh:
-            _dir_refresh_bg()
+    if not force:                 # 同 jjy_contacts：只有点了同步才回源
         return have, ""
 
     out, page, err = [], 0, ""
