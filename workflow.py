@@ -236,6 +236,12 @@ class WorkflowEngine:
                                  w.get("name") or w.get("id"), a.get("targets") or [])
                 a = {"type": "reply", "template": a.get("template") or ""}
             else:
+                # 认不出的动作类型只能丢，但**必须喊一声**：admin.html 是每次请求
+                # 现读磁盘的，git pull 完不重启 = 新页面配着老引擎，新加的动作
+                # 类型会在这儿被静默吃掉，表现成"保存了但动作没了"，极难查。
+                self.log.warning("工作流[%s] 有认不出的动作类型 %r，已丢弃 —— "
+                                 "多半是代码拉了但进程没重启",
+                                 w.get("name") or w.get("id"), a.get("type"))
                 continue
             acts.append(a)
         w["actions"] = acts
