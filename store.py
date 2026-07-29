@@ -107,6 +107,18 @@ CREATE TABLE IF NOT EXISTS wf_schedule(
   last_slot TEXT    NOT NULL DEFAULT '',   -- 已触发的时间槽标识, 如 2026-07-25 09:00
   last_fire INTEGER NOT NULL DEFAULT 0
 );
+
+-- 通讯录/群列表快照。这两份是从语聚接口拉来的，以前只活在进程内存里，
+-- 一重启就空，管理页要干等上游翻几十页。落一份进来：启动直接读库就能用，
+-- 上游刷新退化成后台的“更新”。
+-- 存接口**原样返回**的 JSON —— 选人面板的字段口径以后再改也不用迁移库。
+CREATE TABLE IF NOT EXISTS directory(
+  kind       TEXT NOT NULL,                  -- 'group' | 'contact'
+  id         TEXT NOT NULL,                  -- imRoomId / wxid
+  raw        TEXT NOT NULL DEFAULT '{}',
+  updated_at INTEGER NOT NULL DEFAULT 0,
+  PRIMARY KEY(kind, id)
+);
 """
 
 
@@ -748,6 +760,52 @@ class Store:
         with self._lock:
             self._db.execute("DELETE FROM wf_schedule WHERE wf_id=?", (str(wf_id),))
             self._db.commit()
+
+    # ---------- 通讯录/群列表快照 ----------
+    def save_directory(self, kind, items, full=True):
+        """items = [(id, 接口原样的记录 dict)]。返回写入条数。
+
+        full=True 表示这次上游全量拉完了，库里多出来的行(已解散的群/已删的人)
+        跟着删掉；上游只拉到一半就报错时传 full=False —— 只更新拿到的这些，
+        别把没拉到的那截当成"已经不存在"抹了。
+        """
+        now = int(time.time())
+        rows = [(str(kind), str(i), json.dumps(r, ensure_ascii=False), now)
+                for i, r in items if i]
+        with self._lock:
+            try:
+                if full:
+                    keep = {r[1] for r in rows}
+                    old = [r["id"] for r in self._db.execute(
+                        "SELECT id FROM directory WHERE kind=?", (str(kind),))]
+                    gone = [(str(kind), i) for i in old if i not in keep]
+                    if gone:
+                        self._db.executemany(
+                            "DELETE FROM directory WHERE kind=? AND id=?", gone)
+                self._db.executemany(
+                    "INSERT OR REPLACE INTO directory(kind,id,raw,updated_at)"
+                    " VALUES(?,?,?,?)", rows)
+                self._db.commit()
+            except Exception:
+                self._db.rollback()
+                raise
+        return len(rows)
+
+    def load_directory(self, kind):
+        """-> (记录列表, 快照时间)。快照时间 0 = 库里还没有这份数据。"""
+        with self._lock:
+            rs = self._db.execute("SELECT raw, updated_at FROM directory"
+                                  " WHERE kind=?", (str(kind),)).fetchall()
+        out, at = [], 0
+        for r in rs:
+            try:
+                d = json.loads(r["raw"])
+            except Exception:
+                continue                       # 单条坏了不拖累整份快照
+            if isinstance(d, dict):
+                out.append(d)
+                at = max(at, int(r["updated_at"] or 0))
+        return out, at
 
     def stats(self):
         with self._lock:
