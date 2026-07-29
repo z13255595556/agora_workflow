@@ -1288,19 +1288,40 @@ function keepSel(st,items){
 // 联系人并进群成员，按人 id 去重（两边本来就是同一个 id 空间）。
 // 同一个人以通讯录的名字/身份为准 —— 群里挂的可能是"十点半睡"这种群昵称，
 // 但「在哪个群」的标注要留着。
-function mergeContacts(items){
+// 群成员接口给的名字可能是群昵称，通讯录里有的话以通讯录为准
+function nameFromContacts(items){
   const cmap=new Map(CONTACT_ITEMS().map(c=>[c.id,c]));
-  const out=items.map(m=>{const c=cmap.get(m.id);return c?{...m,name:c.name,tag:c.tag}:m;});
-  const seen=new Set(out.map(x=>x.id));
-  cmap.forEach((c,id)=>{if(!seen.has(id)) out.push(c);});
+  return items.map(m=>{const c=cmap.get(m.id);return c?{...m,name:c.name,tag:c.tag}:m;});
+}
+// 选中的私聊会话 -> 对端那个人。会话 id 有两个来源：联系人面板给的
+// "S:"+chatId，和工作台会话给的 "S:"+聚合chat_id —— 两边分别查
+function peerItems(sids){
+  const out=[],seen=new Set();
+  sids.forEach(s=>{
+    const c=CONTACTS.find(x=>x.id===s);
+    const it=c&&c.wxid ? {id:c.wxid,name:c.name||c.wxid,tag:c.is_external?'外部':'同事'}
+      : (()=>{const ss=SESSIONS.find(x=>x.id===s);
+              return ss&&ss.peer_uid?{id:ss.peer_uid,name:ss.name||ss.peer_uid,tag:'对端'}:null;})();
+    if(it&&!seen.has(it.id)){seen.add(it.id);out.push(it);}
+  });
   return out;
 }
-// 首次渲染用的初始候选(同步，只读缓存，不发请求)。
+// 「指定发送人」的候选池。
+//   没选会话 -> 全部联系人
+//   选了会话 -> **只列这些会话里的人**：群=群成员，私聊=对端。
+//              选了会话还把整本通讯录摊开是噪音 —— 那些人根本触发不了这条工作流
+// 例外：选了群但一个成员都没拉到(接口挂了/还没同步群成员)，退回全部联系人。
+// 否则面板空着，人卡在这儿谁也选不了，比多列几个人糟得多。
+//
 // ⚠️ 不按会话类型切换候选：人 id 统一之后没有理由切，而且联系人接口 835 人
 // 全是 coworker、**一个外部客户都没有** —— 外部客户只存在于群成员里(735 人中
 // 549 个是外部微信用户)。按会话类型切等于把他们挡在门外。
 function senderItems(t){
-  return mergeContacts(memberItems((t.sessions||[]).filter(x=>x.startsWith('R:'))));
+  const sess=t.sessions||[];
+  if(!sess.length) return CONTACT_ITEMS();
+  const pool=[...memberItems(sess.filter(x=>x.startsWith('R:'))),
+              ...peerItems(sess.filter(x=>x.startsWith('S:')))];
+  return pool.length?nameFromContacts(pool):CONTACT_ITEMS();
 }
 // 只在缺缓存时请求后端；force=true 才让后端跳过缓存重拉群列表。
 // 一次把所有群打包发出去 —— 按群逐个请求的话，force 时后端每个群都会把整份
@@ -1324,16 +1345,22 @@ async function syncSenderList(force){
   const gids=mselGet('tSess').filter(x=>x.startsWith('R:'));
   const need=force?gids:gids.filter(g=>!MEMCACHE[g]);
   if(need.length) await fetchMembers(need,force);
-  const mem=memberItems(gids);
-  st.items=keepSel(st,mergeContacts(mem));
+  const sess=mselGet('tSess'), mem=memberItems(gids);
+  const items=senderItems({sessions:sess});
+  st.items=keepSel(st,items);
   // 覆盖数按**真拿到成员**的群算。以前这里报的是勾了几个群，而实际只拉前 10 个，
   // 看起来是全的
   const got=gids.filter(g=>(MEMCACHE[g]||[]).length).length;
-  if(hint)hint.textContent=`联系人 ${CONTACTS.length} 人`+(gids.length
-    ? ` + ${got}/${gids.length} 个群共 ${mem.length} 名成员`
-      +(got<gids.length?'（其余群拿不到成员，见控制台）':'')
-      +(force?'（已刷新）':(need.length?'':'（缓存）'))
-    : ' · 外部客户只在群成员里，去「指定会话」勾几个群就能一起列出来');
+  const fellback=gids.length&&!mem.length;   // 群成员一个都没拉到，退回了通讯录
+  if(hint)hint.textContent=!sess.length
+    ? `通讯录 ${CONTACTS.length} 人 · 外部客户只在群成员里，去「指定会话」勾几个群就能列出来`
+    : fellback
+      ? `选中的群一个成员都没拉到，暂时列出通讯录 ${CONTACTS.length} 人 —— 点「刷新群成员」重试（原因见控制台）`
+      : `只列选中会话里的人：${items.length} 人`+(gids.length
+          ? `（${got}/${gids.length} 个群共 ${mem.length} 名成员`
+            +(got<gids.length?'，其余群拿不到成员，见控制台':'')
+            +(force?'，已刷新':(need.length?'':'，缓存'))+'）'
+          : '');
   if(force) toast(`已刷新 ${mem.length} 名群成员`);
   st.q='';
   const sq=document.querySelector('.msel[data-key="tSender"] .msq'); if(sq) sq.value='';
