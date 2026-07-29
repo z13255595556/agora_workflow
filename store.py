@@ -108,6 +108,23 @@ CREATE TABLE IF NOT EXISTS wf_schedule(
   last_fire INTEGER NOT NULL DEFAULT 0
 );
 
+-- 「AI 回复」动作的对话上下文。为什么不直接从 messages 表里捞：
+--   * 群里同时好几个人在说话，messages 是一锅粥。这里一份上下文的键是
+--     (工作流, 会话, 人)，两个人同时 @ 机器人也各聊各的，互不串味
+--   * 同一个会话可以挂两条 AI 工作流(比如一条答技术一条答商务)，各记各的
+--   * 只有真正喂给模型、以及模型真正答过的内容才进来 —— 图片占位符、撤回、
+--     别人的群聊闲话都不会污染上下文
+CREATE TABLE IF NOT EXISTS ai_context(
+  seq        INTEGER PRIMARY KEY AUTOINCREMENT,   -- 全局自增, 排序锚点
+  wf_id      TEXT    NOT NULL DEFAULT '',
+  session_id TEXT    NOT NULL DEFAULT '',
+  peer       TEXT    NOT NULL DEFAULT '',         -- 群里=@的那位, 私聊=对端
+  role       TEXT    NOT NULL DEFAULT '',         -- user | assistant
+  content    TEXT    NOT NULL DEFAULT '',
+  ts         INTEGER NOT NULL DEFAULT 0
+);
+CREATE INDEX IF NOT EXISTS ix_ai_ctx ON ai_context(wf_id, session_id, peer, seq);
+
 -- 通讯录/群列表快照。这两份是从语聚接口拉来的，以前只活在进程内存里，
 -- 一重启就空，管理页要干等上游翻几十页。落一份进来：启动直接读库就能用，
 -- 上游刷新退化成后台的“更新”。
@@ -760,6 +777,64 @@ class Store:
         with self._lock:
             self._db.execute("DELETE FROM wf_schedule WHERE wf_id=?", (str(wf_id),))
             self._db.commit()
+
+    # ---------- AI 回复的对话上下文 ----------
+    def ai_ctx_read(self, wf_id, session_id, peer,
+                    mode="count", count=20, minutes=30):
+        """取一份上下文，按时间正序返回 [{"role","content"}]。
+
+        session_id 走 siblings 展开 —— chat_id 漂移过的会话在库里是多行，
+        和 get_messages 一个路子；不展开的话对方换个会话 id 上下文就断了。
+        """
+        ids = self.siblings(session_id) or [session_id]
+        ph  = ",".join("?" * len(ids))
+        sql = ("SELECT role, content FROM ai_context WHERE wf_id=? AND peer=?"
+               " AND session_id IN (%s)" % ph)
+        args = [str(wf_id or ""), str(peer or "")] + ids
+        if mode == "time":
+            sql += " AND ts>=? ORDER BY seq ASC"
+            args.append(int(time.time()) - max(1, int(minutes or 30)) * 60)
+            rev = False
+        else:
+            sql += " ORDER BY seq DESC LIMIT ?"
+            args.append(max(1, min(int(count or 20), 100)))
+            rev = True                    # 取的是最近 N 条, 倒回来才是时间序
+        with self._lock:
+            rows = self._db.execute(sql, args).fetchall()
+        if rev:
+            rows = list(reversed(rows))
+        return [{"role": r["role"], "content": r["content"]}
+                for r in rows if (r["content"] or "").strip()]
+
+    def ai_ctx_append(self, wf_id, session_id, peer, turns, keep=200):
+        """追加几行(通常是 user 提问 + assistant 回答)，顺手裁掉超出 keep 的旧行。
+
+        裁剪按 (工作流, 会话, 人) 这一份单独算 —— 一个热闹的群不该把另一个人
+        的上下文挤没。
+        """
+        now = int(time.time())
+        rows = [(str(wf_id or ""), str(session_id or ""), str(peer or ""),
+                 str(r), str(c), now) for r, c in turns if str(c or "").strip()]
+        if not rows:
+            return 0
+        k = (str(wf_id or ""), str(session_id or ""), str(peer or ""))
+        with self._lock:
+            try:
+                self._db.executemany(
+                    "INSERT INTO ai_context(wf_id,session_id,peer,role,content,ts)"
+                    " VALUES(?,?,?,?,?,?)", rows)
+                # 第 keep+1 新的那行的 seq 就是删除水位；不够 keep 行时子查询
+                # 返回 NULL，`seq <= NULL` 谁也删不掉，正好
+                self._db.execute(
+                    "DELETE FROM ai_context WHERE wf_id=? AND session_id=? AND peer=?"
+                    " AND seq <= (SELECT seq FROM ai_context WHERE wf_id=?"
+                    "   AND session_id=? AND peer=? ORDER BY seq DESC"
+                    "   LIMIT 1 OFFSET ?)", k + k + (max(1, int(keep or 200)),))
+                self._db.commit()
+            except Exception:
+                self._db.rollback()
+                raise
+        return len(rows)
 
     # ---------- 通讯录/群列表快照 ----------
     def save_directory(self, kind, items, full=True):

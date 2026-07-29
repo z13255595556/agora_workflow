@@ -78,6 +78,8 @@
   .seg button{border:none;background:none;padding:5px 12px;border-radius:6px;cursor:pointer;
               font-size:12.5px;font-family:inherit;color:var(--text-2);font-weight:500}
   .seg button.on{background:#fff;color:var(--text);box-shadow:0 1px 2px rgba(15,18,26,.1);font-weight:600}
+  .seg button:disabled{cursor:default;opacity:.55}
+  .seg.locked{opacity:.75}
 
   /* 徽章 */
   .bdg{display:inline-flex;align-items:center;gap:4px;font-size:11.5px;padding:2px 8px;border-radius:6px;
@@ -705,6 +707,8 @@ function trigSummary(w){
 function actSummary(w){
   return (w.actions||[]).map(a=>{
     if(a.type==='reply') return `<span class="bdg blue">自定义回复</span>`;
+    if(a.type==='ai') return `<span class="bdg green">AI 回复${a.bailian!==false?' · 百炼':''}
+      · 上下文${a.ctx_mode==='time'?`${a.ctx_minutes||30}分钟`:`${a.ctx_count||20}条`}</span>`;
     return `<span class="bdg amber">调用接口${a.reply?' · 回复返回值':''}</span>`;
   }).join('')||'<span class="bdg red">无动作</span>';
 }
@@ -951,9 +955,7 @@ function paintSum(){
   collectSafe();
   const t=M.trigger,c=t.content,w=[];
   if(t.kind==='schedule'){
-    const acts=(M.actions||[]).map(a=>a.type==='reply'
-      ? `回复 ${a.template?'<span class="kw">自定义内容</span>':'<span class="miss">未填内容</span>'}`
-      : `调用接口${a.url?'':' <span class="miss">未填地址</span>'}${a.reply?' <span class="miss">但定时触发没有来源会话，回复不了</span>':''}`);
+    const acts=(M.actions||[]).map(a=>actPhrase(a,true));
     $('#dSumTx').innerHTML=`<b>${schDesc(t.schedule||{})}</b>，<b>就</b> `+
       (acts.length?acts.join('，然后 '):'<span class="miss">还没有动作</span>');
     return;
@@ -971,11 +973,24 @@ function paintSum(){
   else if(c.mode==='all'&&c.keywords.length) w.push(`同时含 <span class="kw">${esc(c.keywords.join(' + '))}</span>`);
   else if(c.mode==='regex'&&c.regex) w.push(`匹配正则 <span class="kw">${esc(c.regex)}</span>`);
   const when=w.length?w.join(' 且 '):'<b>任意会话的任意消息</b>';
-  const acts=(M.actions||[]).map(a=>a.type==='reply'
-    ? `回复 ${a.template?'<span class="kw">自定义内容</span>':'<span class="miss">未填内容</span>'}`
-    : `调用接口${a.url?'':' <span class="miss">未填地址</span>'}${a.reply?'并回复结果':''}`);
+  const acts=(M.actions||[]).map(a=>actPhrase(a,false));
   const then=acts.length?acts.join('，然后 '):'<span class="miss">还没有动作</span>';
   $('#dSumTx').innerHTML=`当 ${when}，<b>就</b> ${then}`;
+}
+// 一条动作在「当…就…」预览里的说法。sched=定时工作流(没有来源会话，回不了消息)
+function actPhrase(a,sched){
+  if(a.type==='reply')
+    return `回复 ${a.template?'<span class="kw">自定义内容</span>':'<span class="miss">未填内容</span>'}`;
+  if(a.type==='ai'){
+    if(sched) return '<span class="miss">AI 回复用不了：定时触发没有来源会话</span>';
+    const miss=a.bailian!==false
+      ? (a.app_id||a.url?'':' <span class="miss">未填应用 ID</span>')
+      : (a.url?'':' <span class="miss">未填接口地址</span>');
+    const ctx=a.ctx_mode==='time'?`最近 ${a.ctx_minutes||30} 分钟`:`最近 ${a.ctx_count||20} 条`;
+    return `<span class="kw">AI 回复</span>${miss}（带上 ${ctx}对话）`;
+  }
+  return `调用接口${a.url?'':' <span class="miss">未填地址</span>'}${
+    a.reply?(sched?' <span class="miss">但定时触发没有来源会话，回复不了</span>':'并回复结果'):''}`;
 }
 // 只读取当前存在的 DOM，缺元素也不报错(用于预览，不做校验)
 function collectSafe(){try{collect();}catch(e){}}
@@ -1094,7 +1109,10 @@ function renderEditor(){
        <button data-v="any" class="${t.at_me==='any'?'on':''}">不限</button>
        <button data-v="yes" class="${t.at_me==='yes'?'on':''}">必须 @ 托管账号</button>
        <button data-v="no" class="${t.at_me==='no'?'on':''}">必须未 @</button></div>
-     <div class="varhint">依据推送的 at_list 判断；私聊消息视为未@</div>`,t.at_me!=='any','i-at')}
+     <div class="varhint" id="atLockTip" style="color:var(--amber,#b45309)">
+       动作里有「AI 回复」，这条锁定为「必须 @」——群里靠 @ 决定这轮对话是谁在问。
+       <b>私聊不受影响</b>，一对一本来就不用 @。</div>
+     <div class="varhint">拿机器人昵称在正文里匹配；私聊不参与判断</div>`,t.at_me!=='any','i-at')}
   ${crow('cMt','消息类型',hMt,`
      <div style="display:flex;gap:6px;flex-wrap:wrap" id="mtBox">
        ${MSG_TYPES.map(([v,n])=>`<label class="bdg" style="cursor:pointer;padding:5px 10px">
@@ -1127,6 +1145,9 @@ function renderEditor(){
     <button class="addtile" id="btnAddHttp">
       <span class="ai b"><svg><use href="#i-api"/></svg></span>
       <span><span class="an">调用接口</span><span class="ad">调 HTTP 接口，可把返回内容发回会话</span></span></button>
+    <button class="addtile" id="btnAddAi">
+      <span class="ai b"><svg><use href="#i-at"/></svg></span>
+      <span><span class="an">AI 回复</span><span class="ad">带上下文调模型，回答发回会话</span></span></button>
   </div>
   </div><!-- /pane2 -->
 
@@ -1170,7 +1191,7 @@ function renderEditor(){
             <option value="0">内部成员</option>
             <option value="1">外部用户</option></select></label>
         <label class="${sched?'hide':''}" style="display:flex;gap:6px;align-items:center;font-size:12.5px">
-          <input type="checkbox" id="tsAt" style="width:auto"> 已 @ 托管账号</label>
+          <input type="checkbox" id="tsAt" ${t.at_me==='yes'?'checked':''} style="width:auto"> 已 @ 托管账号</label>
         <label style="display:flex;gap:6px;align-items:center;font-size:12.5px">
           <input type="checkbox" id="tsHttp" checked style="width:auto"> 真实调用接口(不发消息)</label>
         <button class="btn sm primary" id="btnRunTest"><svg><use href="#i-play"/></svg>运行测试</button></div>
@@ -1213,6 +1234,10 @@ function renderEditor(){
     template:''});renderActions();};
   $('#btnAddHttp').onclick=()=>{collectActions();M.actions.push({type:'http',method:'GET',url:'',headers:'',body:'',
     timeout_sec:10,retries:1,reply:true,reply_path:'',reply_template:'{result}'});renderActions();};
+  $('#btnAddAi').onclick=()=>{collectActions();M.actions.push({type:'ai',bailian:true,quote:true,
+    url:'',app_id:'',api_key:'',headers:'',extra:'',reply_path:'',
+    ctx_mode:'count',ctx_count:20,ctx_minutes:30,
+    timeout_sec:60,retries:1,reply_template:'{result}'});renderActions();};
   $('#btnRefreshMem').onclick=()=>syncSenderList(true);   // 只有这个按钮会真的重拉群列表
   $('#btnRunTest').onclick=runTest;
   renderActions();
@@ -1320,13 +1345,13 @@ function renderActions(){
   const box=$('#actList');
   if(!M.actions.length){
     box.innerHTML=`<div class="empty" style="padding:20px;box-shadow:none;background:#fff;margin-bottom:10px">
-      还没有动作 · 从下面选一个添加</div>`;paintSum();return;
+      还没有动作 · 从下面选一个添加</div>`;syncAtLock();paintSum();return;
   }
   box.innerHTML=M.actions.map((a,i)=>{
-    const fw=a.type==='reply';
+    const fw=a.type==='reply',ai=a.type==='ai';
     const hd=`<div class="act-hd"><span class="no">${i+1}</span>
-      <span class="ty ${fw?'g':'b'}"><svg><use href="#${fw?'i-fwd':'i-api'}"/></svg></span>
-      <span class="tt">${fw?'自定义回复':'调用接口'}</span><span class="sp"></span>
+      <span class="ty ${fw?'g':'b'}"><svg><use href="#${fw?'i-fwd':ai?'i-at':'i-api'}"/></svg></span>
+      <span class="tt">${fw?'自定义回复':ai?'AI 回复':'调用接口'}</span><span class="sp"></span>
       <button class="ab" data-op="up" data-i="${i}" title="上移"><svg class="ic"><use href="#i-up"/></svg></button>
       <button class="ab" data-op="down" data-i="${i}" title="下移"><svg class="ic"><use href="#i-down"/></svg></button>
       <button class="ab del" data-op="del" data-i="${i}" title="删除"><svg class="ic"><use href="#i-trash"/></svg></button></div>`;
@@ -1336,6 +1361,53 @@ function renderActions(){
         <div class="varhint">变量：<code>{content}</code> 消息内容 · <code>{sender_name}</code> 发送人 ·
           <code>{source_name}</code> 来源会话名 · <code>{time}</code> <code>{date}</code></div></div>
       </div></div>`;
+    if(ai){
+      const bl=a.bailian!==false;
+      return `<div class="act ht">${hd}<div class="act-bd">
+      <div class="frow">
+        <div class="ffield"><div class="lab">百炼专用
+          <span class="tip">阿里云百炼(DashScope)应用接口；关掉走 OpenAI 兼容格式</span>
+          <label class="sw"><input type="checkbox" class="aSw" data-i="${i}" data-k="bailian" ${bl?'checked':''}><span class="sl"></span></label></div></div>
+        <div class="ffield"><div class="lab">引用原消息回复<span class="tip">仅企微渠道生效，别的渠道会忽略</span>
+          <label class="sw"><input type="checkbox" class="aSw" data-i="${i}" data-k="quote" ${a.quote!==false?'checked':''}><span class="sl"></span></label></div></div></div>
+      <div class="frow blBox ${bl?'':'hide'}" data-i="${i}">
+        <div class="ffield"><div class="lab">应用 ID<span class="tip">百炼控制台的 appId</span></div>
+          <input type="text" class="aIn" data-i="${i}" data-k="app_id" value="${esc(a.app_id||'')}" style="font-family:var(--mono)"></div>
+        <div class="ffield"><div class="lab">API Key<span class="tip">DASHSCOPE_API_KEY，自动拼成 Bearer</span></div>
+          <input type="text" class="aIn" data-i="${i}" data-k="api_key" value="${esc(a.api_key||'')}" style="font-family:var(--mono)"></div></div>
+      <div class="frow gpBox ${bl?'hide':''}" data-i="${i}">
+        <div class="ffield"><div class="lab">接口地址<span class="tip">百炼模式留空 = 按应用 ID 自动拼</span></div>
+          <input type="text" class="aIn" data-i="${i}" data-k="url" placeholder="https://…/v1/chat/completions" value="${esc(a.url||'')}" style="font-family:var(--mono)"></div>
+        <div class="ffield" style="flex:0 0 200px"><div class="lab">提取路径<span class="tip">留空= choices.0.message.content</span></div>
+          <input type="text" class="aIn" data-i="${i}" data-k="reply_path" value="${esc(a.reply_path||'')}" style="font-family:var(--mono)"></div></div>
+      <div class="frow">
+        <div class="ffield" style="flex:0 0 190px"><div class="lab">上下文取法</div>
+          <div class="seg aCtxSeg" data-i="${i}">
+            <button data-v="count" class="${a.ctx_mode!=='time'?'on':''}">按条数</button>
+            <button data-v="time" class="${a.ctx_mode==='time'?'on':''}">按时间</button></div></div>
+        <div class="ffield ctxCnt ${a.ctx_mode==='time'?'hide':''}" data-i="${i}">
+          <div class="lab">最近几条<span class="tip">一问一答算 2 条，1–100</span></div>
+          <input type="number" class="aIn" data-i="${i}" data-k="ctx_count" min="1" max="100" value="${a.ctx_count||20}"></div>
+        <div class="ffield ctxMin ${a.ctx_mode==='time'?'':'hide'}" data-i="${i}">
+          <div class="lab">最近几分钟<span class="tip">超时的旧对话不再带上，1–1440</span></div>
+          <input type="number" class="aIn" data-i="${i}" data-k="ctx_minutes" min="1" max="1440" value="${a.ctx_minutes||30}"></div></div>
+      <div class="frow">
+        <div class="ffield"><div class="lab">附加参数<span class="tip">JSON，浅合并进请求体；<code>system</code> 键会变成消息列表最前面那条</span></div>
+          <textarea class="aIn" data-i="${i}" data-k="extra" rows="2"
+            placeholder='{"system":"你是声网 RTE 技术支持，回答简洁准确。"}' style="font-family:var(--mono)">${esc(a.extra||'')}</textarea></div></div>
+      <div class="frow">
+        <div class="ffield"><div class="lab">自定义请求头<span class="tip">一行一个 Key: Value；填了 Authorization 就不用上面的 Key</span></div>
+          <textarea class="aIn" data-i="${i}" data-k="headers" rows="1" style="font-family:var(--mono)">${esc(a.headers||'')}</textarea></div>
+        <div class="ffield" style="flex:0 0 110px"><div class="lab">超时(秒)</div>
+          <input type="number" class="aIn" data-i="${i}" data-k="timeout_sec" min="1" max="1900" value="${a.timeout_sec||60}"></div>
+        <div class="ffield" style="flex:0 0 110px"><div class="lab">失败重试</div>
+          <input type="number" class="aIn" data-i="${i}" data-k="retries" min="0" max="3" value="${a.retries??1}"></div></div>
+      <div class="ffield"><div class="lab">回复模板<span class="tip">留空 = 原样发模型的回答</span></div>
+        <input type="text" class="aIn" data-i="${i}" data-k="reply_template" value="${esc(a.reply_template||'{result}')}"></div>
+      <div class="varhint">上下文按 <b>(工作流 / 会话 / 人)</b> 单独存 —— 群里两个人同时 @ 机器人各聊各的。
+        <code>{result}</code> 是模型的回答，另支持 {content} {sender_name} 等</div>
+      </div></div>`;
+    }
     return `<div class="act ht">${hd}<div class="act-bd">
       <div class="frow">
         <div class="ffield" style="flex:0 0 130px"><div class="lab">方法</div>
@@ -1378,6 +1450,20 @@ function renderActions(){
     M.actions[+el.dataset.i].reply=el.checked;
     document.querySelector(`.rpBox[data-i="${el.dataset.i}"]`).classList.toggle('hide',!el.checked);
     paintSum();});
+  $$('#actList .aSw').forEach(el=>el.onchange=()=>{
+    const i=el.dataset.i,a=M.actions[+i]; a[el.dataset.k]=el.checked;
+    if(el.dataset.k==='bailian'){          // 百炼/通用两组字段互斥显示
+      document.querySelector(`.blBox[data-i="${i}"]`).classList.toggle('hide',!el.checked);
+      document.querySelector(`.gpBox[data-i="${i}"]`).classList.toggle('hide',el.checked);
+    }
+    paintSum();});
+  $$('#actList .aCtxSeg').forEach(seg=>seg.querySelectorAll('button').forEach(b=>b.onclick=()=>{
+    const i=seg.dataset.i,v=b.dataset.v;
+    seg.querySelectorAll('button').forEach(x=>x.classList.toggle('on',x===b));
+    M.actions[+i].ctx_mode=v;
+    document.querySelector(`.ctxCnt[data-i="${i}"]`).classList.toggle('hide',v==='time');
+    document.querySelector(`.ctxMin[data-i="${i}"]`).classList.toggle('hide',v!=='time');
+    paintSum();}));
   $$('#actList .ab').forEach(el=>el.onclick=()=>{
     const i=+el.dataset.i,op=el.dataset.op;
     collectActions();          // 先收集当前输入，避免重排丢内容
@@ -1385,7 +1471,25 @@ function renderActions(){
     if(op==='up'&&i>0) [M.actions[i-1],M.actions[i]]=[M.actions[i],M.actions[i-1]];
     if(op==='down'&&i<M.actions.length-1) [M.actions[i+1],M.actions[i]]=[M.actions[i],M.actions[i+1]];
     renderActions();});
+  syncAtLock();
   paintSum();
+}
+// AI 回复靠 @ 决定"这轮对话是谁在问"，所以有这个动作时把「是否 @」锁成必须@
+// 并置灰。私聊不受影响 —— 后端只在群聊校验这个条件(workflow.py 的 _match)。
+function syncAtLock(){
+  const seg=$('#segAt'); if(!seg)return;
+  const lock=(M.actions||[]).some(a=>a.type==='ai');
+  if(lock) M.trigger.at_me='yes';
+  seg.querySelectorAll('button').forEach(b=>{
+    b.disabled=lock;
+    b.classList.toggle('on',b.dataset.v===M.trigger.at_me);});
+  seg.classList.toggle('locked',lock);
+  $('#atLockTip')?.classList.toggle('hide',!lock);
+  if(lock){
+    $('#cAt')?.classList.add('open','set');
+    // 试跑样例也跟着勾上，否则加完 AI 动作第一次试跑必然"未@托管账号"
+    const ts=$('#tsAt'); if(ts) ts.checked=true;
+  }
 }
 function collectActions(){
   $$('#actList .aIn').forEach(el=>{
@@ -1417,6 +1521,18 @@ function validate(){
   for(const a of M.actions){
     if(a.type==='reply'&&!(a.template||'').trim()) return '「自定义回复」还没填回复内容';
     if(a.type==='http'&&!/^https?:\/\//.test(a.url||'')) return '「调用接口」的地址必须以 http(s):// 开头';
+    if(a.type==='ai'){
+      const u=(a.url||'').trim();
+      if(a.bailian!==false){
+        if(!u&&!(a.app_id||'').trim()) return '「AI 回复」百炼模式要填应用 ID';
+      }else if(!/^https?:\/\//.test(u)) return '「AI 回复」的接口地址必须以 http(s):// 开头';
+      if(u&&!/^https?:\/\//.test(u)) return '「AI 回复」的接口地址必须以 http(s):// 开头';
+      if((a.extra||'').trim()){
+        try{const o=JSON.parse(a.extra);
+          if(!o||typeof o!=='object'||Array.isArray(o)) return '「AI 回复」的附加参数必须是 JSON 对象';
+        }catch(e){ return '「AI 回复」的附加参数不是合法 JSON：'+e.message; }
+      }
+    }
   }
   if(M.trigger.kind==='schedule'){
     const sc=M.trigger.schedule||{};
@@ -1426,9 +1542,12 @@ function validate(){
       if(!nextFireTs(sc)) return '指定的日期时间已经过去了，请选未来的时间';
     }
     // 定时触发没有来源会话，回复只会回来源，所以这两个开关是冲突的
-    for(const a of M.actions)
+    for(const a of M.actions){
       if(a.type==='http'&&a.reply)
         return '定时触发没有来源会话，请关掉「调用接口」的回复开关';
+      if(a.type==='ai')
+        return '定时触发没有来源会话，「AI 回复」只能用在消息触发的工作流里';
+    }
     return '';
   }
   const c=M.trigger.content;
@@ -1476,7 +1595,7 @@ async function runTest(){
     else{
       const rows=(j.results||[]).map(r=>`<div class="ln">
         <span class="b">${r.ok?'✅':'❌'}</span>
-        <span><b>${r.action==='reply'?'回复':'接口'}</b> · ${esc(r.detail)}</span></div>`).join('');
+        <span><b>${{reply:'回复',ai:'AI 回复'}[r.action]||'接口'}</b> · ${esc(r.detail)}</span></div>`).join('');
       out.innerHTML=`<div class="tres okk"><div class="ln"><span class="b">✅</span><span><b>命中触发条件</b></span></div>${rows}</div>`;}
   }catch(e){out.innerHTML=`<div class="tres no">请求失败：${esc(e.message||e)}</div>`;}
   btn.disabled=false;

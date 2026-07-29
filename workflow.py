@@ -16,7 +16,11 @@ workflow.py — 消息工作流引擎 (纯标准库)
     reply      自定义回复(支持模板变量)。发到**来源会话** —— 不需要配任何 id，
                推送里带的 chat_id 永远是当前有效的那个
     http       调用接口(GET/POST、自定义头/体、超时、重试)，
-               可把返回内容(支持 JSON 路径提取)按模板回复到来源会话或指定会话
+               可把返回内容(支持 JSON 路径提取)按模板回复到来源会话
+    ai         AI 回复。和 http 的区别只有一个：请求体不用你写，引擎按这个人
+               和机器人之前聊过的话拼 messages[]。上下文存在 ai_context 表，
+               键是(工作流, 会话, 人) —— 群里两个人同时@机器人各聊各的。
+               默认走百炼(DashScope)应用接口，关掉开关就是 OpenAI 兼容形态
 
   高可用设计：
     * 动作在后台 worker 线程池执行，DLL 推送线程永不被 HTTP 阻塞
@@ -77,7 +81,8 @@ def _norm_date(v):
 
 class WorkflowEngine:
     def __init__(self, base_dir, send_text, log, resolve_name=None, classify=None, store=None):
-        """send_text(sid, text)->bool 发消息；resolve_name(id)->str 显示名；
+        """send_text(sid, text, quote_id="")->bool 发消息(quote_id 非空则引用原消息)；
+        resolve_name(id)->str 显示名；
         classify(uid)->0内部/1外部/None未知(用户类型条件用)；
         store: Store 实例，用于持久化运行记录/累计统计(None 则退化为内存 deque)。"""
         self.file       = os.path.join(base_dir, "workflows.json")
@@ -227,6 +232,26 @@ class WorkflowEngine:
                 # 「回复到」已下线：接口返回只回消息来源那个会话。语聚发送接口
                 # 认的是聚合对话 chat_id，选人面板给的联系人 id 发过去必 503。
                 a.pop("reply_to", None)
+            elif a.get("type") == "ai":
+                # 模型不在这儿配 —— 百炼是在百炼应用/工作流里选的，通用模式
+                # 想指定就写进 extra(`{"model":"qwen-plus"}`)，不值得单开一个字段
+                a["bailian"] = bool(a.get("bailian", True))
+                a.setdefault("url", "")
+                a.setdefault("app_id", "")
+                a.setdefault("api_key", "")
+                a.setdefault("headers", "")
+                a.setdefault("extra", "")
+                a.setdefault("reply_path", "")
+                a["quote"] = bool(a.get("quote", True))
+                a["ctx_mode"] = (a.get("ctx_mode")
+                                 if a.get("ctx_mode") in ("count", "time") else "count")
+                a["ctx_count"]   = min(100, max(1, int(a.get("ctx_count") or 20)))
+                a["ctx_minutes"] = min(1440, max(1, int(a.get("ctx_minutes") or 30)))
+                # AI 接口慢，默认给 60 秒(http 动作是 10 秒)
+                a["timeout_sec"] = min(1900, max(1, int(a.get("timeout_sec") or 60)))
+                r = a.get("retries")
+                a["retries"]     = min(3, max(0, 1 if r in (None, "") else int(r)))
+                a.setdefault("reply_template", "{result}")
             elif a.get("type") == "forward":
                 # 「转发到其他群/人」已下线：语聚只认聚合对话 chat_id，而那个 id
                 # 只在对方先说话之后才存在，选人面板给的联系人 id 根本发不出去。
@@ -245,6 +270,10 @@ class WorkflowEngine:
                 continue
             acts.append(a)
         w["actions"] = acts
+        # AI 回复靠 @ 触发：面板上这个条件是锁死置灰的，这里再兜一道，
+        # 免得直接编辑 workflows.json 绕过去。私聊不受影响(见 _match)。
+        if any(x.get("type") == "ai" for x in acts):
+            t["at_me"] = "yes"
         w["cooldown_sec"] = min(86400, max(0, int(w.get("cooldown_sec") or 0)))
         w["max_per_min"]  = min(600, max(1, int(w.get("max_per_min") or 30)))
         w["serial"]       = bool(w.get("serial"))
@@ -505,7 +534,10 @@ class WorkflowEngine:
                 return False, "发送人是外部用户(条件要求内部成员)"
             if stype == "external" and se == 0:
                 return False, "发送人是内部成员(条件要求外部用户)"
-        if t.get("at_me") == "yes" and not at_me:
+        # 「必须@」只在群聊成立。at_me 是拿机器人昵称在正文里找出来的(jjy.py)，
+        # 私聊压根不参与计算、永远是 0 —— 硬卡的话配了这个条件的工作流在私聊
+        # 永远不触发，而私聊本来就是一对一，不存在"要不要@我"这回事。
+        if t.get("at_me") == "yes" and sid.startswith("R:") and not at_me:
             return False, "未 @ 托管账号"
         if t.get("at_me") == "no" and at_me:
             return False, "@ 了托管账号(条件要求未@)"
@@ -588,6 +620,10 @@ class WorkflowEngine:
                                                   self._render(a.get("url"), ctx, urlencode=True))})
                     else:
                         results.append(self._do_http(a, ctx, msg, dry))
+                elif a.get("type") == "ai":
+                    # AI 回复真调模型是要花钱的，所以试跑一律只拼请求体不发出去
+                    results.append(self._do_ai(a, ctx, msg, wf, dry=True)
+                                   if dry else self._do_ai(a, ctx, msg, wf))
             except Exception as e:
                 results.append({"action": a.get("type") or "?", "ok": False,
                                 "detail": "异常: %s" % e})
@@ -642,6 +678,42 @@ class WorkflowEngine:
         return {"action": "reply", "ok": ok,
                 "detail": ("已回复：" if ok else "回复失败：") + text[:80]}
 
+    def _request(self, url, method="GET", headers=None, body=None,
+                 timeout=10, retries=0):
+        """带退避重试的 HTTP 调用。返回 (status, raw, err, tries)。
+
+        err 非空 = 这次没拿到 2xx 响应，raw 可能有(错误响应体)也可能没有。
+        「调用接口」和「AI 回复」共用这一份，别再抄一遍重试逻辑。
+        """
+        attempts = 1 + int(retries or 0)
+        last_err, raw, status, tries = "", None, 0, 0
+        for i in range(attempts):
+            tries = i + 1
+            try:
+                req = urllib.request.Request(url, data=body,
+                                             headers=headers or {}, method=method)
+                with urllib.request.urlopen(req, timeout=timeout) as resp:
+                    status = resp.status
+                    raw = resp.read(MAX_RESP_BYTES).decode("utf-8", "ignore")
+                if 200 <= status < 300:
+                    return status, raw, "", tries
+                last_err = "HTTP %s" % status
+            except urllib.error.HTTPError as e:
+                status = e.code
+                try:
+                    raw = e.read(MAX_RESP_BYTES).decode("utf-8", "ignore")
+                except Exception:
+                    raw = None
+                last_err = "HTTP %s %s" % (e.code, (raw or "")[:120])
+                # 客户端类错误(参数/鉴权/路径/超限)重试也不会成功，直接放弃
+                if e.code in (400, 401, 403, 404, 405, 411, 413):
+                    break
+            except Exception as e:
+                last_err = str(e) or e.__class__.__name__
+            if i < attempts - 1:
+                time.sleep(5 * (i + 1))    # 重试退避(兼顾 429 busy 场景)
+        return status, raw, (last_err or "无响应"), tries
+
     def _do_http(self, a, ctx, msg, dry=False):
         url = self._render(a.get("url"), ctx, urlencode=True)
         if not url.startswith(("http://", "https://")):
@@ -665,39 +737,12 @@ class WorkflowEngine:
                 headers["Content-Type"] = "application/json"
         headers.setdefault("User-Agent", "wxwork-gateway-workflow/1.0")
 
-        timeout = a.get("timeout_sec") or 10
-        attempts = 1 + (a.get("retries") or 0)
-        last_err = ""
-        raw = None
-        status = 0
-        tries = 0
-        for i in range(attempts):
-            tries = i + 1
-            try:
-                req = urllib.request.Request(url, data=body, headers=headers, method=method)
-                with urllib.request.urlopen(req, timeout=timeout) as resp:
-                    status = resp.status
-                    raw = resp.read(MAX_RESP_BYTES).decode("utf-8", "ignore")
-                if 200 <= status < 300:
-                    break
-                last_err = "HTTP %s" % status
-            except urllib.error.HTTPError as e:
-                status = e.code
-                try:
-                    raw = e.read(MAX_RESP_BYTES).decode("utf-8", "ignore")
-                except Exception:
-                    raw = None
-                last_err = "HTTP %s %s" % (e.code, (raw or "")[:120])
-                # 客户端类错误(参数/鉴权/路径/超限)重试也不会成功，直接放弃
-                if e.code in (400, 401, 403, 404, 405, 411, 413):
-                    break
-            except Exception as e:
-                last_err = str(e) or e.__class__.__name__
-            if i < attempts - 1:
-                time.sleep(5 * (i + 1))    # 重试退避(兼顾 429 busy 场景)
-        if raw is None or not (200 <= status < 300):
+        status, raw, err, tries = self._request(
+            url, method, headers, body,
+            a.get("timeout_sec") or 10, a.get("retries") or 0)
+        if err:
             return {"action": "http", "ok": False,
-                    "detail": "调用失败(尝试%d次): %s" % (tries, last_err)}
+                    "detail": "调用失败(尝试%d次): %s" % (tries, err)}
 
         detail = "HTTP %s %s" % (status, url[:80])
         # ---- 提取返回内容 ----
@@ -736,6 +781,136 @@ class WorkflowEngine:
         elif dry:
             detail += " · 返回(前200字): %s" % result[:200]
         return {"action": "http", "ok": True, "detail": detail}
+
+    # ============ AI 回复 ============
+    DASHSCOPE_URL = "https://dashscope.aliyuncs.com/api/v1/apps/%s/completion"
+
+    def _do_ai(self, a, ctx, msg, wf, dry=False):
+        """带上下文调模型，把回答发回来源会话。
+
+        和「调用接口」的区别只有一个：请求体不用你写，引擎按这个人和机器人
+        之前聊过的话拼 messages[]。上下文存在 ai_context 表里，键是
+        (工作流, 会话, 人) —— 群里两个人同时 @ 机器人，各聊各的。
+        """
+        sid  = ctx.get("source") or ""
+        peer = str(msg.get("sender") or "")
+        if not sid:
+            return {"action": "ai", "ok": False,
+                    "detail": "没有来源会话（定时工作流用不了 AI 回复）"}
+        ask = (ctx.get("content") or "").strip()
+        if not ask:
+            return {"action": "ai", "ok": False, "detail": "触发消息没有文本内容"}
+
+        # ---- 上下文：历史 + 当前这句。历史读失败就按第一轮处理，不让它挡着回话 ----
+        hist = []
+        if self.store:
+            try:
+                hist = self.store.ai_ctx_read(
+                    wf.get("id") or "", sid, peer,
+                    mode=a.get("ctx_mode"), count=a.get("ctx_count"),
+                    minutes=a.get("ctx_minutes"))
+            except Exception as e:
+                self.log.warning("读取 AI 上下文失败，这轮按无上下文处理: %s", e)
+        messages = hist + [{"role": "user", "content": ask}]
+
+        # ---- 附加参数：浅合并进请求体顶层；system 单独拎出来放消息列表最前 ----
+        extra = {}
+        if (a.get("extra") or "").strip():
+            try:
+                extra = json.loads(self._render(a["extra"], ctx))
+            except json.JSONDecodeError as e:
+                return {"action": "ai", "ok": False,
+                        "detail": "附加参数不是合法 JSON: %s" % e}
+            if not isinstance(extra, dict):
+                return {"action": "ai", "ok": False, "detail": "附加参数必须是 JSON 对象"}
+        sysmsg = str(extra.pop("system", "") or "").strip()
+        if sysmsg:
+            messages = [{"role": "system", "content": sysmsg}] + messages
+
+        bailian = bool(a.get("bailian"))
+        url = self._render(a.get("url"), ctx, urlencode=True).strip()
+        if bailian and not url:
+            app_id = (a.get("app_id") or "").strip()
+            if not app_id:
+                return {"action": "ai", "ok": False, "detail": "百炼模式要填应用 ID"}
+            url = self.DASHSCOPE_URL % urllib.parse.quote(app_id, safe="")
+        if not url.startswith(("http://", "https://")):
+            return {"action": "ai", "ok": False, "detail": "接口地址必须以 http(s):// 开头"}
+
+        body = ({"input": {"messages": messages}, "parameters": {}, "debug": {}}
+                if bailian else {"messages": messages})
+        body.update(extra)
+
+        headers = {"Content-Type": "application/json"}
+        for line in (a.get("headers") or "").splitlines():
+            if ":" in line:
+                k, _, v = line.partition(":")
+                if k.strip():
+                    headers[k.strip()] = self._render(v.strip(), ctx)
+        key = (a.get("api_key") or "").strip()
+        if key and "Authorization" not in headers:
+            headers["Authorization"] = "Bearer " + key
+        headers.setdefault("User-Agent", "wxwork-gateway-workflow/1.0")
+
+        if dry:
+            return {"action": "ai", "ok": True,
+                    "detail": "预览 · %s · 上下文 %d 条 · 请求体 %s" % (
+                        url[:60], len(messages),
+                        json.dumps(body, ensure_ascii=False)[:400])}
+
+        status, raw, err, tries = self._request(
+            url, "POST", headers, json.dumps(body, ensure_ascii=False).encode("utf-8"),
+            a.get("timeout_sec") or 60, a.get("retries") or 0)
+        if err:
+            return {"action": "ai", "ok": False,
+                    "detail": "调用失败(尝试%d次): %s" % (tries, err)}
+        detail = "HTTP %s · 上下文 %d 条" % (status, len(messages))
+
+        result, perr = self._ai_answer(raw, bailian, a.get("reply_path"))
+        if perr:
+            return {"action": "ai", "ok": False, "detail": detail + " · " + perr}
+
+        text = self._render(a.get("reply_template") or "{result}",
+                            dict(ctx, result=result)).strip()
+        if len(text) > MAX_REPLY_LEN:
+            text = text[:MAX_REPLY_LEN] + "…"
+        qid = str(msg.get("msg_id") or "") if a.get("quote") else ""
+        if not self.send_text(sid, text, qid):
+            return {"action": "ai", "ok": False, "detail": detail + " · 回复失败"}
+
+        # 发出去了才落库。模型答了但没发成也不写 —— 对方根本没看见这句，
+        # 记进上下文只会让下一轮基于一段从未发生过的对话往下编。
+        if self.store:
+            try:
+                self.store.ai_ctx_append(wf.get("id") or "", sid, peer,
+                                         [("user", ask), ("assistant", result)])
+            except Exception as e:
+                self.log.warning("AI 上下文落库失败(这轮不影响回复): %s", e)
+        return {"action": "ai", "ok": True, "detail": detail + " · 已回复：" + text[:80]}
+
+    def _ai_answer(self, raw, bailian, path=""):
+        """从响应里取回复文本。返回 (text, err)。"""
+        try:
+            data = json.loads(raw or "")
+        except json.JSONDecodeError:
+            return "", "响应不是 JSON: %s" % (raw or "")[:120]
+        if bailian:
+            # 官方形态是 output.text；应用编排(工作流)走的是 workflow_message
+            out = data.get("output") or {}
+            txt = str(out.get("text") or "").strip()
+            if not txt:
+                wm = (out.get("workflow_message") or {}).get("message") or {}
+                txt = str(wm.get("content") or "").strip()
+            if not txt:
+                return "", "响应里没有回复内容: %s" % json.dumps(
+                    data, ensure_ascii=False)[:160]
+            return txt, ""
+        val = self._extract(data, (path or "choices.0.message.content").strip())
+        if val is None:
+            return "", "响应中提取不到 %s" % (path or "choices.0.message.content")
+        txt = (val if isinstance(val, str) else
+               json.dumps(val, ensure_ascii=False)).strip()
+        return (txt, "") if txt else ("", "提取到的回复是空的")
 
     @staticmethod
     def _extract(data, path):

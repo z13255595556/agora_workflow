@@ -1272,9 +1272,14 @@ def health_loop():
 
 
 # ============================ 工作流引擎接入 ============================
-def _wf_send(sid, text):
-    """工作流引擎的发送出口：发成功计入回复统计。"""
-    ok = send_text(sid, text)
+def _wf_send(sid, text, quote_id=""):
+    """工作流引擎的发送出口：发成功计入回复统计。
+
+    quote_id = 触发消息的 msg_id，非空就引用它回复（AI 回复默认开着）。
+    ⚠️ 引用只有企微代运营渠道支持，别的渠道语聚直接忽略这个字段 ——
+    不会报错，就是没引用效果，所以这里不做渠道判断。
+    """
+    ok, _ = send_text_ex(sid, text, quote_id=quote_id)
     if ok:
         with _lock:
             STATS["forwarded"] += 1
