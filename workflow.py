@@ -224,7 +224,9 @@ class WorkflowEngine:
                 a["reply"]       = bool(a.get("reply"))
                 a.setdefault("reply_path", "")
                 a.setdefault("reply_template", "{result}")
-                a["reply_to"]    = [x for x in (a.get("reply_to") or []) if x]
+                # 「回复到」已下线：接口返回只回消息来源那个会话。语聚发送接口
+                # 认的是聚合对话 chat_id，选人面板给的联系人 id 发过去必 503。
+                a.pop("reply_to", None)
             elif a.get("type") == "forward":
                 # 「转发到其他群/人」已下线：语聚只认聚合对话 chat_id，而那个 id
                 # 只在对方先说话之后才存在，选人面板给的联系人 id 根本发不出去。
@@ -467,10 +469,16 @@ class WorkflowEngine:
         alt_room = str((msg.get("jjy") or {}).get("room_id") or "")
 
         # 会话面板列的是本地会话 id；企微那边有、但还没来过消息的群/联系人，
-        # 列的是 imRoomId / "S:"+chatId —— 两个别名让这类也能匹配上。
-        if t.get("sessions") and sid not in t["sessions"] \
-           and alt_chat not in t["sessions"] and alt_room not in t["sessions"]:
-            return False, "会话不匹配"
+        # 列的是 imRoomId / "S:"+chatId / wxid —— 这几个别名让这类也能匹配上，
+        # 所以「还没来过消息」不妨碍拿它当触发条件：第一条消息一到就对上了。
+        # peer(=人 id) 只在私聊算会话别名 —— 群聊里它是**发言人**，
+        # 认了就变成"张三在任何群说话都算这个会话"。
+        if t.get("sessions"):
+            alias = [sid, alt_chat, alt_room]
+            if sid.startswith("S:"):
+                alias.append(peer)
+            if not any(x in t["sessions"] for x in alias if x):
+                return False, "会话不匹配"
         ct = t.get("chat_type", "any")
         if ct == "group" and not sid.startswith("R:"):
             return False, "非群聊消息(条件要求仅群聊)"
@@ -707,19 +715,18 @@ class WorkflowEngine:
             text = self._render(a.get("reply_template") or "{result}", rctx).strip()
             if len(text) > MAX_REPLY_LEN:
                 text = text[:MAX_REPLY_LEN] + "…"
-            # 不选回复目标时默认回来源会话；定时触发没有来源，必须显式指定
-            targets = [t for t in (a.get("reply_to") or [ctx["source"]]) if t]
-            if not targets:
+            # 只回消息来源那个会话。定时触发没有来源，回不了
+            tgt = ctx.get("source") or ""
+            if not tgt:
                 return {"action": "http", "ok": False,
-                        "detail": detail + " · 定时触发没有来源会话，请在「回复到」指定目标"}
+                        "detail": detail + " · 定时触发没有来源会话，回复不了（请关掉回复开关）"}
             if dry:
                 return {"action": "http", "ok": True,
-                        "detail": detail + " · 回复预览 → %s：%s" % ("、".join(targets), text[:200])}
-            fail = [t for t in targets if not self.send_text(t, text)]
-            if fail:
-                return {"action": "http", "ok": False,
-                        "detail": detail + " · 回复失败: %s" % "、".join(fail)}
-            detail += " · 已回复 " + "、".join(targets)
+                        "detail": detail + " · 回复预览 → %s：%s" % (
+                            ctx.get("source_name") or tgt, text[:200])}
+            if not self.send_text(tgt, text):
+                return {"action": "http", "ok": False, "detail": detail + " · 回复失败"}
+            detail += " · 已回复 " + (ctx.get("source_name") or tgt)
         elif dry:
             detail += " · 返回(前200字): %s" % result[:200]
         return {"action": "http", "ok": True, "detail": detail}

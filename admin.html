@@ -641,14 +641,15 @@ let MSEL={};              // 多选器/chips 注册表
 
 function buildPicker(){
   const map=new Map();
-  // paired=false 的群：企微群列表里有，但从没收到过它的消息，所以拿不到聚合对话
-  // 的 chat_id —— 发送接口认的是那个 id，选了也发不出去，标出来但不给选。
+  // paired=false = 企微那边有这个群/人，但网关还没收到过它的消息，所以还没有
+  // 聚合对话 chat_id。这**只影响主动发消息**，不影响当触发条件用：
+  // PICKER 现在只喂「指定会话」，存的是 imRoomId / 人 id 这类恒定身份，
+  // 第一条消息推过来时后端拿 room_id / external_contact_id 就能对上(见 _match)。
+  // 所以只打标签说明"还没来过消息"，不再置灰。
   GROUPS.forEach(g=>g.id&&map.set(g.id,{id:g.id,name:g.name||g.id,
-    tag:g.paired===false?'未接入':(String(g.is_external)==='1'?'外部群':'群'),
-    disabled:g.paired===false}));
+    tag:g.paired===false?'未来过消息':(String(g.is_external)==='1'?'外部群':'群')}));
   CONTACTS.forEach(c=>c.id&&!map.has(c.id)&&map.set(c.id,{id:c.id,name:c.name||c.id,
-    tag:c.paired===false?'未接入':(c.is_external?'外部':'同事'),
-    disabled:c.paired===false}));
+    tag:c.paired===false?'未来过消息':(c.is_external?'外部':'同事')}));
   SESSIONS.forEach(s=>s.id&&!map.has(s.id)&&map.set(s.id,{id:s.id,name:s.name||s.id,tag:s.is_group?'群':'人'}));
   PICKER=[...map.values()];
 }
@@ -799,11 +800,8 @@ function mselPaint(key){
   // 已选的排到列表最前(各自保持原顺序，稳定)；勾选当下不重排，只在重新渲染时置顶
   const list=filtered.filter(x=>st.sel.has(x.id)).concat(filtered.filter(x=>!st.sel.has(x.id)));
   const lb=box.querySelector('.msel-list');
-  // disabled：企微那边有这个群/人，但还没收到过它的消息，拿不到聚合对话的
-  // 会话 id —— 发送接口认的是那个 id，勾了也发不出去，所以直接禁掉
-  lb.innerHTML=list.length?list.map(x=>`<label class="msel-it ${st.sel.has(x.id)?'on':''}${x.disabled?' off':''}"
-      ${x.disabled?'title="还没收到过这个会话的消息，暂时不能作为发送目标"':''}>
-      <input type="checkbox" data-id="${esc(x.id)}" ${st.sel.has(x.id)?'checked':''} ${x.disabled?'disabled':''}>
+  lb.innerHTML=list.length?list.map(x=>`<label class="msel-it ${st.sel.has(x.id)?'on':''}">
+      <input type="checkbox" data-id="${esc(x.id)}" ${st.sel.has(x.id)?'checked':''}>
       <span class="tg">${esc(x.tag||'')}</span><span>${esc(x.name||x.id)}</span>
       ${x.sub?`<span class="sub" title="${esc(x.subTitle||x.sub)}">${esc(x.sub)}</span>`:''}
       ${x.more?`<span class="subn" title="${esc(x.subTitle||'')}">+${x.more}</span>`:''}
@@ -955,7 +953,7 @@ function paintSum(){
   if(t.kind==='schedule'){
     const acts=(M.actions||[]).map(a=>a.type==='reply'
       ? `回复 ${a.template?'<span class="kw">自定义内容</span>':'<span class="miss">未填内容</span>'}`
-      : `调用接口${a.url?'':' <span class="miss">未填地址</span>'}${a.reply?(a.reply_to&&a.reply_to.length?'并回复结果':' <span class="miss">未选回复目标</span>'):''}`);
+      : `调用接口${a.url?'':' <span class="miss">未填地址</span>'}${a.reply?' <span class="miss">但定时触发没有来源会话，回复不了</span>':''}`);
     $('#dSumTx').innerHTML=`<b>${schDesc(t.schedule||{})}</b>，<b>就</b> `+
       (acts.length?acts.join('，然后 '):'<span class="miss">还没有动作</span>');
     return;
@@ -1214,7 +1212,7 @@ function renderEditor(){
   $('#btnAddReply').onclick=()=>{collectActions();M.actions.push({type:'reply',
     template:''});renderActions();};
   $('#btnAddHttp').onclick=()=>{collectActions();M.actions.push({type:'http',method:'GET',url:'',headers:'',body:'',
-    timeout_sec:10,retries:1,reply:true,reply_path:'',reply_template:'{result}',reply_to:[]});renderActions();};
+    timeout_sec:10,retries:1,reply:true,reply_path:'',reply_template:'{result}'});renderActions();};
   $('#btnRefreshMem').onclick=()=>syncSenderList(true);   // 只有这个按钮会真的重拉群列表
   $('#btnRunTest').onclick=runTest;
   renderActions();
@@ -1359,7 +1357,7 @@ function renderActions(){
           <input type="number" class="aIn" data-i="${i}" data-k="timeout_sec" min="1" max="1900" value="${a.timeout_sec||10}"></div>
         <div class="ffield"><div class="lab">失败重试次数</div>
           <input type="number" class="aIn" data-i="${i}" data-k="retries" min="0" max="3" value="${a.retries??1}"></div>
-        <div class="ffield"><div class="lab">把返回内容回复到会话
+        <div class="ffield"><div class="lab">把返回内容回复到来源会话
           <label class="sw"><input type="checkbox" class="aReply" data-i="${i}" ${a.reply?'checked':''}><span class="sl"></span></label></div></div></div>
       <div class="rpBox ${a.reply?'':'hide'}" data-i="${i}">
         <div class="frow">
@@ -1368,16 +1366,11 @@ function renderActions(){
               placeholder="data.answer 或 choices.0.message.content" value="${esc(a.reply_path||'')}" style="font-family:var(--mono)"></div>
           <div class="ffield"><div class="lab">回复模板</div>
             <input type="text" class="aIn" data-i="${i}" data-k="reply_template" value="${esc(a.reply_template||'{result}')}"></div></div>
-        <div class="ffield"><div class="lab">回复到<span class="tip">不选 = 回到消息来源会话</span></div>
-          ${mselHTML('aRto'+i,PICKER,a.reply_to)}</div>
         <div class="varhint" style="margin-bottom:8px">回复模板变量：<code>{result}</code> 接口返回/提取值，另支持 {content} {sender_name} 等。
           请求体里可用 <code>{content_json}</code> <code>{sender_name_json}</code>(JSON 转义，放双引号内)，消息含引号/换行也不会拼坏 JSON</div>
       </div></div></div>`;
   }).join('');
 
-  M.actions.forEach((a,i)=>{
-    if(a.type==='reply') ;
-    else mselBind('aRto'+i);});
   $$('#actList .aIn').forEach(el=>el.onchange=()=>{
     const a=M.actions[+el.dataset.i]; if(!a)return;
     a[el.dataset.k]=el.type==='number'?+el.value:el.value; paintSum();});
@@ -1398,11 +1391,7 @@ function collectActions(){
   $$('#actList .aIn').forEach(el=>{
     const a=M.actions[+el.dataset.i]; if(!a)return;
     a[el.dataset.k]=el.type==='number'?+el.value:el.value;});
-  // 只读取“已经渲染出来”的多选器。动作卡片尚未渲染时(如刚打开编辑器)
-  // 若无条件覆盖，会把已保存的目标清成空数组——务必先判存在。
-  M.actions.forEach((a,i)=>{
-    if(a.type==='reply'){ /* 只有模板，模板走 aIn 统一收集 */ }
-    else { if(MSEL['aRto'+i]) a.reply_to=mselGet('aRto'+i); }});
+  // 动作里已经没有多选器了：回复/调用接口的字段全是 .aIn，上面一把收完
 }
 function collect(){
   M.name=$('#fName').value.trim()||'未命名工作流';
@@ -1436,10 +1425,10 @@ function validate(){
       if(!sc.date) return '定时「指定日期」还没选日期';
       if(!nextFireTs(sc)) return '指定的日期时间已经过去了，请选未来的时间';
     }
-    // 定时触发没有来源会话，回复目标必须显式指定，否则执行时必然失败
+    // 定时触发没有来源会话，回复只会回来源，所以这两个开关是冲突的
     for(const a of M.actions)
-      if(a.type==='http'&&a.reply&&!(a.reply_to||[]).length)
-        return '定时触发没有来源会话，「调用接口」的回复目标必须指定';
+      if(a.type==='http'&&a.reply)
+        return '定时触发没有来源会话，请关掉「调用接口」的回复开关';
     return '';
   }
   const c=M.trigger.content;

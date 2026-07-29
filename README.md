@@ -295,7 +295,13 @@ location ^~ /workflow/ {
 唯一的桥梁在推送报文里：`source_addition.room_id` 就是 `imRoomId`，
 `source_addition.bot_wxid` 就是 `imBotId`。所以本程序见到一次就存进
 `sessions.room_id` —— 也因此，**只有来过消息的群才映射得上**。选人面板里
-映射不上的群标成「未接入」并置灰，别让人选了个发不出去的目标。
+映射不上的标成「未来过消息」，但**照样可以选**：它只出现在「指定会话」这个
+触发条件里，存的是 `imRoomId` / 人 id 这类恒定身份，第一条消息推过来时
+`_match` 拿 `room_id` / `external_contact_id` 就对上了，不需要提前有 `chat_id`。
+
+发消息则相反 —— 动作里已经没有「发到别处」这回事了：「自定义回复」和
+「调用接口」的回复都只回**消息来源那个会话**，来源的 `chat_id` 就在推送里，
+不存在发不出去的情况。
 
 人的那套同理：选人面板给的是 `imContactId`，消息里带的是 `user_id`，
 所以工作流的「指定发送人」两个都比（`workflow.py` 的 `_match`），
