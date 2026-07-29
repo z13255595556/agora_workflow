@@ -156,14 +156,18 @@
   /* ---- 撤回：原消息留档，只展示成一行系统提示 ---- */
   .wa-revoked{text-align:center;margin:8px 0;font-size:11.5px;color:var(--text-3)}
 
-  /* ---- 气泡悬停操作条(引用 / 撤回) ---- */
+  /* ---- 气泡悬停操作条(引用 / 撤回) ----
+     显隐由 JS 挂 .ops-on 控制，不用 :hover —— 鼠标移开后要多留 2 秒，
+     好让人够得着按钮；纯 CSS 做不到"移开后延迟消失"。
+     用 visibility 而不是 display:none，这样能做淡出，且隐藏时不吃点击。 */
   .wa-row .col{position:relative}
-  .wa-ops{position:absolute;top:-9px;display:none;gap:2px;padding:2px;
+  .wa-ops{position:absolute;top:-9px;display:flex;gap:2px;padding:2px;
           background:var(--panel);border:1px solid var(--border);border-radius:8px;
-          box-shadow:0 2px 8px rgba(15,18,26,.1);z-index:2}
+          box-shadow:0 2px 8px rgba(15,18,26,.1);z-index:2;
+          opacity:0;visibility:hidden;transition:opacity .12s}
   .wa-row:not(.me) .wa-ops{right:-4px;transform:translateX(100%)}
   .wa-row.me .wa-ops{left:-4px;transform:translateX(-100%)}
-  .wa-row:hover .wa-ops{display:flex}
+  .wa-row.ops-on .wa-ops{opacity:1;visibility:visible}
   .wa-ops button{border:0;background:transparent;cursor:pointer;border-radius:6px;
                  padding:4px 7px;font-size:11.5px;color:var(--text-2);white-space:nowrap}
   .wa-ops button:hover{background:var(--brand-weak);color:var(--brand)}
@@ -613,9 +617,9 @@ function bubbleHTML(m,prev){
     ? `<div class="wa-bubble media" data-mkey="${m.media.id}">${mediaHTML(m)}</div>`
     : rich ? `<div class="wa-bubble media">${rich}</div>`
     : `<div class="wa-bubble">${esc(m.content)}</div>`;
-  // 引用和撤回都要拿语聚那边的 message_id 去调接口。
-  // local: 前缀的是我们自己补录的(发送接口不返回 message_id)，没有真 id，
-  // 给了按钮点下去必然失败 —— 所以干脆不给。
+  // 引用和撤回都要拿语聚那边的 message_id 去调接口，而那个 id **只有推送里有**：
+  // 发送接口的响应不给 message_id，语聚也不回推 API 发出去的消息(实测)。
+  // 所以自己发的那条挂的是 local: 占位 id，操作条直接不给 —— 给了必然失败。
   const rid=(m.id&&!String(m.id).startsWith('local:'))?m.id:'';
   const ops=rid?`<div class="wa-ops">`
     +`<button data-quote="${esc(rid)}">引用</button>`
@@ -643,6 +647,7 @@ function pendingHTML(p,prev){
 }
 function render(toBottom){
   if(!cur) return;
+  opsHide();          // 整段 innerHTML 会被换掉，带 .ops-on 的那个节点就没了
   const box=$('#waMsgs');
   const myPending=pending.filter(p=>p.sid===cur.id);
   if(!msgs.length&&!myPending.length){
@@ -696,6 +701,40 @@ $('#waMsgs').addEventListener('click',e=>{
   const row=e.target.closest('.wa-row.failed');
   if(row){ const p=pending.find(x=>x.key===row.dataset.pkey); if(p) doSend(p); }
 });
+
+// ==================== 气泡操作条的显隐 ====================
+// 规则：悬停在哪条消息上就显示哪条的操作条；鼠标移开后再留 2 秒(不然按钮
+// 在气泡外侧，往那边移的路上就消失了)；但**移到另一条消息上时上一条立刻收起**，
+// 否则两条操作条会同时挂着。
+const OPS_GRACE=2000;
+let opsRow=null, opsTimer=null;
+
+function opsShow(row){
+  if(row===opsRow){ clearTimeout(opsTimer); opsTimer=null; return; }
+  opsHide();                       // 换了一条 -> 上一条立刻消失，不走 2 秒宽限
+  opsRow=row; row.classList.add('ops-on');
+}
+function opsHide(){
+  clearTimeout(opsTimer); opsTimer=null;
+  if(opsRow){ opsRow.classList.remove('ops-on'); opsRow=null; }
+}
+function opsHideLater(){
+  clearTimeout(opsTimer);
+  opsTimer=setTimeout(opsHide, OPS_GRACE);
+}
+// 用 mouseover/mouseout(会冒泡)而不是 mouseenter/mouseleave(不冒泡)，
+// 这样一个委托监听器就够，消息重渲染后也不用重新绑定
+$('#waMsgs').addEventListener('mouseover',e=>{
+  const row=e.target.closest('.wa-row');
+  if(row&&row.querySelector('.wa-ops')) opsShow(row);
+});
+$('#waMsgs').addEventListener('mouseout',e=>{
+  const row=e.target.closest('.wa-row');
+  // 还在同一条里面挪动(比如从气泡挪到操作条上)不算离开
+  if(row&&row===opsRow&&!row.contains(e.relatedTarget)) opsHideLater();
+});
+// 列表滚动或重渲染时，opsRow 可能已经从 DOM 里没了，留着会漏掉 .ops-on 的清理
+$('#waMsgs').addEventListener('scroll',()=>{ if(opsRow) opsHide(); });
 
 // ==================== 引用 ====================
 let quoting=null;          // {id,name,text} 待发送的引用目标
@@ -929,7 +968,6 @@ function connectSSE(){
     if(ev.type==='message') onLive(ev);
     else if(ev.type==='media') onMedia(ev);
     else if(ev.type==='revoke') onRevoke(ev);
-    else if(ev.type==='msg_update') onMsgUpdate(ev);
     else if(ev.type==='raw_push') onRawPush(ev.item);
     else if(ev.type==='read'){
       const s=sessions.find(x=>x.id===ev.session_id);
@@ -957,16 +995,6 @@ async function resync(){
       if(!atB){ newCount+=fresh.length; updateNewPill(); }
     }
   }catch(e){}
-}
-// 原地替换一条已有消息(不动滚动位置)。目前只有一个用途：后台回查拿到真
-// message_id 后把补录的那条换掉，引用/撤回按钮随之出现，不用刷新页面。
-function onMsgUpdate(ev){
-  const m=ev.message;
-  if(!m||!cur||cur.id!==ev.session_id) return;
-  const i=msgs.findIndex(x=>x.seq===m.seq);
-  if(i<0) return;
-  msgs[i]=m;
-  render(false);
 }
 function onLive(ev){
   if(ev.session) upsertSession(ev.session);

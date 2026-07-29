@@ -163,58 +163,6 @@ class Store:
                 (room_id, bot_id or "", session_id, room_id, bot_id or ""))
             self._db.commit()
 
-    def local_msgs(self, session_id, limit=20, max_age=900):
-        """本地补录、还没换到真 message_id 的消息(旧的在前)。
-
-        发送接口不返回 message_id，语聚也不回推自己发的消息 ——
-        这些行先挂个 local: 前缀的占位 id，之后靠回查会话内容换成真的。
-
-        max_age 是关键：有些消息**永远**匹配不上(正文被语聚改过、或压根没进
-        它的会话记录)。不设上限的话，这条会一直赖在待回填列表里，让之后每一次
-        发送都重新起一轮重试 —— 而回查接口一次吐回整段对话，很贵。
-        超过这个岁数就当认了(重试链本身只有 ~5 分钟，900 秒足够跑完)。
-        """
-        with self._lock:
-            rows = self._db.execute(
-                "SELECT seq, content, ts FROM messages"
-                " WHERE session_id=? AND msg_id LIKE 'local:%' AND ts>?"
-                " ORDER BY seq LIMIT ?",
-                (session_id, int(time.time()) - int(max_age), int(limit))).fetchall()
-        return [{"seq": r["seq"], "content": r["content"], "ts": r["ts"]} for r in rows]
-
-    def known_msg_ids(self, session_id, ids):
-        """给定一批 msg_id，返回其中**已经在库里**的。
-
-        回填时用来排除掉不该认领的候选：语聚自己的 AI 规则发的回复也是
-        outgoing，但那些是走 webhook 推进来的、早就带着真 id 入库了。
-        正文撞车时(「好的」「收到」这种)不排除就会认错，撤回撤到别人头上。
-        """
-        ids = [str(i) for i in ids if i]
-        if not ids:
-            return set()
-        out = set()
-        with self._lock:
-            for i in range(0, len(ids), 400):        # SQLite 变量数有上限
-                chunk = ids[i:i + 400]
-                rows = self._db.execute(
-                    "SELECT msg_id FROM messages WHERE session_id=? AND msg_id IN (%s)"
-                    % ",".join("?" * len(chunk)), [session_id] + chunk).fetchall()
-                out.update(r["msg_id"] for r in rows)
-        return out
-
-    def set_msg_id(self, seq, msg_id):
-        """给某条消息换 msg_id。真 id 已被别的行占用时不动(唯一索引会拦)。"""
-        if not msg_id:
-            return False
-        with self._lock:
-            try:
-                cur = self._db.execute(
-                    "UPDATE messages SET msg_id=? WHERE seq=?", (str(msg_id), int(seq)))
-                self._db.commit()
-                return cur.rowcount > 0
-            except sqlite3.IntegrityError:
-                return False                      # 已经有一行是这个 id 了
-
     def room_map(self):
         """{imRoomId: 内部 session_id}。群列表接口的返回靠它映射回本地会话。"""
         with self._lock:
