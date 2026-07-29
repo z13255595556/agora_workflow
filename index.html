@@ -613,12 +613,14 @@ function bubbleHTML(m,prev){
     ? `<div class="wa-bubble media" data-mkey="${m.media.id}">${mediaHTML(m)}</div>`
     : rich ? `<div class="wa-bubble media">${rich}</div>`
     : `<div class="wa-bubble">${esc(m.content)}</div>`;
-  // 撤回只对自己发的消息给（语聚只允许撤回托管账号自己发的）。
-  // 引用需要消息 id —— 语聚的 quoteMessageId 用的就是推送里那个 message_id。
-  const ops=`<div class="wa-ops">`
-    +(m.id?`<button data-quote="${esc(m.id)}">引用</button>`:'')
-    +(me&&m.id?`<button class="danger" data-revoke="${esc(m.id)}">撤回</button>`:'')
-    +`</div>`;
+  // 引用和撤回都要拿语聚那边的 message_id 去调接口。
+  // local: 前缀的是我们自己补录的(发送接口不返回 message_id)，没有真 id，
+  // 给了按钮点下去必然失败 —— 所以干脆不给。
+  const rid=(m.id&&!String(m.id).startsWith('local:'))?m.id:'';
+  const ops=rid?`<div class="wa-ops">`
+    +`<button data-quote="${esc(rid)}">引用</button>`
+    +(me?`<button class="danger" data-revoke="${esc(rid)}">撤回</button>`:'')
+    +`</div>`:'';
   html+=`<div class="wa-row ${me?'me':''} ${grp?'grp':''}" data-seq="${m.seq}">
     <div class="a" style="background:${avaColor(me?'me':(m.sender||m.sender_name))}">${esc(me?'我':initial(m.sender_name||m.sender))}</div>
     <div class="col">${who}${body}${ops}</div></div>`;

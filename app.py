@@ -201,6 +201,7 @@ JJY_STATS   = {"received": 0, "dup": 0, "rejected": 0,
                "sent": 0,             # 出站发送成功条数(本次启动以来)
                "send_fail": 0,
                "send_err": ""}        # 最近一次发送失败的原因
+JJY_EVENTS  = {}                      # {event_type: 条数} 被 ignored 的都是什么
 
 # 原始推送调试缓冲(只在内存, 不落库)。默认关, 见 config.debug.raw_push
 RAW_PUSHES  = deque(maxlen=1000)
@@ -471,6 +472,34 @@ def jjy_send(conversation_id, message_type, message_content, meta=None, api_key=
     return False, err or "发送失败"
 
 
+def _record_sent(conversation_id, text):
+    """把自己发出去的消息补录进库。
+
+    ⚠️ 语聚**不会**把 OpenAPI 发出去的消息按 ai_assistant_receives_msg 推回来。
+    实测：工作台发一条，received +1 但 ignored 也 +1 —— 推是推了，事件类型
+    不是消息事件。所以不补录的话，前端那个气泡只是本地占位，一刷新就没了。
+    (语聚自己的 AI 规则发的回复倒是走消息事件，两条路不一样。)
+
+    msg_id 用 local: 前缀的本地 id —— 发送接口的响应里没有 message_id，
+    拿不到语聚那边的真 id 就引用不了也撤回不了，前端据此不给这两个按钮。
+    """
+    if not STORE:
+        return
+    try:
+        store_message({
+            "type": PUSH_CHAT, "msg_type": MSG_TEXT,
+            "user_id": conversation_id, "sender": "", "sender_name": "我",
+            "content": text, "time_stamp": int(time.time()),
+            "msg_id": "local:" + uuid.uuid4().hex,
+            "is_self_msg": 1, "at_me": 0, "sender_external": 0,
+            "jjy": {"mt": 2, "chat_id": jjy.raw_chat_id(conversation_id),
+                    "local": True},
+        })
+    except Exception as e:
+        # 补录失败不该让"其实已经发出去了"变成"发送失败"
+        log.warning("已发送但补录入库失败 %s: %s", conversation_id, e)
+
+
 def send_text_ex(conversation_id, msg, quote_id="", mention=None):
     """发文本，返回 (ok, err)。前端要拿 err 显示，所以和 send_text 分成两个。"""
     text = str(msg or "")
@@ -491,6 +520,7 @@ def send_text_ex(conversation_id, msg, quote_id="", mention=None):
             JJY_STATS["send_err"] = err
     if ok:
         log.info("已发送 -> %s (%d 字)", conversation_id, len(text))
+        _record_sent(conversation_id, text)
     else:
         log.warning("发送失败 -> %s: %s", conversation_id, err)
     return ok, err
@@ -1093,6 +1123,9 @@ def _jjy_seen(ev):
 def _capture_jjy_raw(body, msg):
     """留一份语聚推送原文给管理后台的"原始推送"面板。
 
+    msg=None 表示这条没被归一化(不是消息事件)——这类**也要留一份**，
+    否则 ignored 就是个黑箱：只知道丢了几条，不知道丢的是什么。
+
     默认关闭(debug.raw_push) —— 原文含客户对话全文，公网环境开之前想清楚。
     """
     dbg = CONFIG.get("debug") or {}
@@ -1104,11 +1137,13 @@ def _capture_jjy_raw(body, msg):
         raw = repr(body)
     if len(raw) > 20000:
         raw = raw[:20000] + "\n… (已截断)"
-    typ = int((msg.get("jjy") or {}).get("mt") or 0)
+    typ = int(((msg or {}).get("jjy") or {}).get("mt") or 0)
+    name = (TYPE_NAME.get(typ, "已归一化") if msg
+            else "未处理 · " + str(body.get("event_type") or "?"))
     with _lock:
         _RAW_SEQ[0] += 1
         item = {"seq": _RAW_SEQ[0], "t": time.time(), "type": typ,
-                "name": TYPE_NAME.get(typ, "已归一化"), "handled": True, "raw": raw}
+                "name": name, "handled": bool(msg), "raw": raw}
         RAW_PUSHES.append(item)
         cap = int(dbg.get("raw_max") or 300)
         while len(RAW_PUSHES) > cap:
@@ -1126,9 +1161,19 @@ def jjy_worker():
             if not msg:
                 # 语聚除了消息推送还会发别的事件(实测有 chat_finish=对话结束)，
                 # 那不是解析失败, 单独计数, 免得看着像在丢消息
-                ev = body.get("event_type") or ""
+                ev = str(body.get("event_type") or "")
+                other = ev != "ai_assistant_receives_msg"
                 with _lock:
-                    JJY_STATS["ignored" if ev != "ai_assistant_receives_msg" else "bad"] += 1
+                    JJY_STATS["ignored" if other else "bad"] += 1
+                    seen_n = JJY_EVENTS.get(ev, 0) if other else 1
+                    if other:
+                        JJY_EVENTS[ev] = seen_n + 1
+                # 每种事件类型第一次出现时把报文打进日志。ignored 只是个计数，
+                # 光看数字根本不知道被丢的是什么 —— 而"被丢的"里可能就有你要的东西。
+                if other and seen_n == 0:
+                    log.info("未处理的事件类型 event_type=%r，报文: %s", ev,
+                             json.dumps(body, ensure_ascii=False)[:800])
+                _capture_jjy_raw(body, None)
                 continue
             # 会话显示名：DLL 那套通讯录接口没了，只能从每条推送里攒 chat_title。
             # 群聊 store_message 查的是 NAME_MAP[sid]，私聊查的是 _private_peer_id(sid)
@@ -1350,6 +1395,7 @@ class Handler(BaseHTTPRequestHandler):
                     "workflow": WF.stats() if WF else {},
                     "sse_clients": BUS.count(),
                     "jjy": dict(JJY_STATS, queued=JJY_Q.qsize(),
+                                events=dict(JJY_EVENTS),
                                 enabled=bool((CONFIG.get("jjy") or {}).get("enabled"))),
                     "uptime": int(time.time() - STATS["started_at"]),
                     "config": {"listen_addr": CONFIG.get("listen_addr"),
