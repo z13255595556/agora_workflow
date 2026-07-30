@@ -155,8 +155,7 @@ CREATE INDEX IF NOT EXISTS ix_ai_ctx_ts ON ai_context(ts);
 """
 _SCHEMA += _AI_CTX_DDL
 
-AI_CTX_KEEP  = 200      # 每个 talk_id 最多留多少行(跨 sid，旧对话留着做历史)
-AI_CTX_TURNS = 50       # 「一次对话最多几轮」的上限
+AI_CTX_TURNS = 50       # 「带最近几轮」的上限
 
 
 class Store:
@@ -875,13 +874,12 @@ class Store:
         return [{"role": r["role"], "content": r["content"]}
                 for r in rows if (r["content"] or "").strip()]
 
-    def ai_ctx_append(self, wf_id, talk_id, chat_type, sid, turns,
-                      keep=AI_CTX_KEEP):
-        """追加几行(通常是 user 提问 + assistant 回答)，顺手裁掉旧行。
+    def ai_ctx_append(self, wf_id, talk_id, chat_type, sid, turns):
+        """追加几行(通常是 user 提问 + assistant 回答)。返回写入行数。
 
-        裁剪按 (wf_id, talk_id) 算、**跨 sid** —— 旧对话留着做历史，但一个人
-        在一个群里不能无限长。一个热闹的群也不该把另一个人的上下文挤没，
-        所以裁剪键里带着 talk_id。
+        不按条数裁剪 —— 表的大小只由 ai_ctx_gc() 的按天过期兜着。理由：读取侧
+        本来就只取最近 N 轮(滑动窗口)或当前 sid，历史留多少都不影响送给模型的
+        内容；再叠一个"每人留 200 行"的上限只是多一条 DELETE 和一份心智负担。
         """
         now = int(time.time())
         day = time.strftime("%Y-%m-%d", time.localtime(now))
@@ -895,13 +893,6 @@ class Store:
                 self._db.executemany(
                     "INSERT INTO ai_context(wf_id,talk_id,chat_type,sid,role,content,date,ts)"
                     " VALUES(?,?,?,?,?,?,?,?)", rows)
-                # 第 keep+1 新的那行的 seq 就是删除水位；不够 keep 行时子查询
-                # 返回 NULL，`seq <= NULL` 谁也删不掉，正好
-                self._db.execute(
-                    "DELETE FROM ai_context WHERE wf_id=? AND talk_id=?"
-                    " AND seq <= (SELECT seq FROM ai_context WHERE wf_id=?"
-                    "   AND talk_id=? ORDER BY seq DESC LIMIT 1 OFFSET ?)",
-                    k + k + (max(1, int(keep or AI_CTX_KEEP)),))
                 self._db.commit()
             except Exception:
                 self._db.rollback()
@@ -911,10 +902,8 @@ class Store:
     def ai_ctx_gc(self, days=7):
         """删掉超过 days 天的上下文。返回删除行数。
 
-        200 行/talk_id 那个上限管的是"单个人聊太多"，管不了"人越来越多" ——
-        一个客户问过一次就再不出现，那两行会永远躺着。按天过期是唯一会让这张
-        表缩回去的机制。
-        days<=0 = 不过期(留给不想删的人)。
+        这是**唯一**约束这张表大小的机制(append 不做条数裁剪)，所以别把它关了。
+        days<=0 = 不过期。
         """
         d = int(days or 0)
         if d <= 0:
