@@ -22,6 +22,7 @@ store.py — 会话/消息持久化层 (SQLite, 纯标准库)
 """
 
 import json
+import os
 import time
 import sqlite3
 import threading
@@ -108,23 +109,6 @@ CREATE TABLE IF NOT EXISTS wf_schedule(
   last_fire INTEGER NOT NULL DEFAULT 0
 );
 
--- 「AI 回复」动作的对话上下文。为什么不直接从 messages 表里捞：
---   * 群里同时好几个人在说话，messages 是一锅粥。这里一份上下文的键是
---     (工作流, 会话, 人)，两个人同时 @ 机器人也各聊各的，互不串味
---   * 同一个会话可以挂两条 AI 工作流(比如一条答技术一条答商务)，各记各的
---   * 只有真正喂给模型、以及模型真正答过的内容才进来 —— 图片占位符、撤回、
---     别人的群聊闲话都不会污染上下文
-CREATE TABLE IF NOT EXISTS ai_context(
-  seq        INTEGER PRIMARY KEY AUTOINCREMENT,   -- 全局自增, 排序锚点
-  wf_id      TEXT    NOT NULL DEFAULT '',
-  session_id TEXT    NOT NULL DEFAULT '',
-  peer       TEXT    NOT NULL DEFAULT '',         -- 群里=@的那位, 私聊=对端
-  role       TEXT    NOT NULL DEFAULT '',         -- user | assistant
-  content    TEXT    NOT NULL DEFAULT '',
-  ts         INTEGER NOT NULL DEFAULT 0
-);
-CREATE INDEX IF NOT EXISTS ix_ai_ctx ON ai_context(wf_id, session_id, peer, seq);
-
 -- 通讯录/群列表快照。这两份是从语聚接口拉来的，以前只活在进程内存里，
 -- 一重启就空，管理页要干等上游翻几十页。落一份进来：启动直接读库就能用，
 -- 上游刷新退化成后台的“更新”。
@@ -138,21 +122,77 @@ CREATE TABLE IF NOT EXISTS directory(
 );
 """
 
+# 「AI 回复」动作的对话上下文。为什么不直接从 messages 表里捞：
+#   * 群里同时好几个人在说话，messages 是一锅粥。这里按 talk_id 分开，两个人
+#     同时 @ 机器人也各聊各的，互不串味
+#   * 同一个会话可以挂两条 AI 工作流(一条答技术一条答商务)，各记各的
+#   * 只有真正喂给模型、以及模型真正答过的内容才进来 —— 图片占位符、撤回、
+#     别人的群聊闲话都不会污染上下文
+#
+# 两层 id，别混：
+#   talk_id  用户维度。群 = "imRoomId_人id"，私聊 = "人id"。两个都是**身份**，
+#            聚合 chat_id 漂移了它也不变，所以上下文不会因为漂移断掉
+#   sid      送给模型的那一次会话。聊满设定的轮数、或闲置超过设定的分钟数就换
+#            一个新的 —— 换了等于清零重来(硬边界，不是滑动窗口)
+# ⚠️ 这里的 sid 和库里别处的 session_id / sid("R:"+chat_id，聊天会话的**地址**)
+#    同名不同义，看代码时留神。
+# DDL 单独拎出来是因为 _premigrate() 要拿它重建老表。
+_AI_CTX_DDL = """
+CREATE TABLE IF NOT EXISTS ai_context(
+  seq       INTEGER PRIMARY KEY AUTOINCREMENT,   -- 全局自增, 排序锚点
+  wf_id     TEXT    NOT NULL DEFAULT '',         -- 多个 AI 动作时带 #序号
+  talk_id   TEXT    NOT NULL DEFAULT '',
+  chat_type TEXT    NOT NULL DEFAULT '',         -- group | private
+  sid       TEXT    NOT NULL DEFAULT '',
+  role      TEXT    NOT NULL DEFAULT '',         -- user | assistant
+  content   TEXT    NOT NULL DEFAULT '',
+  ts        INTEGER NOT NULL DEFAULT 0
+);
+CREATE INDEX IF NOT EXISTS ix_ai_ctx ON ai_context(wf_id, talk_id, seq);
+"""
+_SCHEMA += _AI_CTX_DDL
+
+AI_CTX_KEEP  = 200      # 每个 talk_id 最多留多少行(跨 sid，旧对话留着做历史)
+AI_CTX_TURNS = 50       # 「一次对话最多几轮」的上限
+
 
 class Store:
-    def __init__(self, db_file, max_per_session=5000, max_runs=2000):
+    def __init__(self, db_file, max_per_session=5000, max_runs=2000, log=None):
         self.db_file = db_file
         self.max_per_session = int(max_per_session or 0)   # 0 = 不限制
         self.max_runs = int(max_runs or 0)                 # 工作流运行明细保留条数, 0=不限制
+        self._log = log                                    # 只给迁移用，喊一声就够
         self._lock = threading.RLock()
         self._db = sqlite3.connect(db_file, check_same_thread=False)
         self._db.row_factory = sqlite3.Row
         self._db.execute("PRAGMA journal_mode=WAL")
         self._db.execute("PRAGMA synchronous=NORMAL")
         with self._lock:
+            self._premigrate()      # 换过列的表必须在建表脚本之前处理，见下
             self._db.executescript(_SCHEMA)
             self._migrate()
             self._db.commit()
+
+    def _premigrate(self):
+        """处理**列变过**的表。必须跑在 _SCHEMA 之前。
+
+        _SCHEMA 里的 CREATE TABLE IF NOT EXISTS 碰上已存在的老表是空操作，
+        但紧跟着的 CREATE INDEX 会引用新列 —— 老表上执行就是
+        "no such column: talk_id"，连库都打不开。所以先在这儿收拾。
+        """
+        # AI 上下文表换形态：老键 (wf_id, session_id, user_id)，新键 (wf_id, talk_id, sid)。
+        # 会话那一维还能算，**人那一维迁不了** —— 本地没有
+        # user_id -> external_contact_id 的映射表，那个对应关系只存在于推送报文里。
+        # 半迁的结果是一堆填不上的死行，不如重建。
+        # 判据是「有没有 session_id 这个列」，所以跑多少次都只重建一次。
+        cols = {r["name"] for r in self._db.execute("PRAGMA table_info(ai_context)")}
+        if cols and "session_id" in cols:
+            n = self._db.execute("SELECT COUNT(*) c FROM ai_context").fetchone()["c"]
+            self._db.executescript("DROP TABLE ai_context;" + _AI_CTX_DDL)
+            if self._log:
+                self._log.warning(
+                    "AI 上下文表已换新形态(talk_id + sid)，%d 行旧记录无法迁移已清空 —— "
+                    "各会话下次对话会从第一轮重新开始", n)
 
     def _migrate(self):
         """幂等迁移：CREATE TABLE IF NOT EXISTS 加不了列，已有库要单独 ALTER。"""
@@ -185,6 +225,7 @@ class Store:
             if name not in scols:
                 self._db.execute(
                     "ALTER TABLE sessions ADD COLUMN %s %s" % (name, decl))
+
 
     # ---------- 身份 ↔ 地址 ----------
     # 聚合对话的 chat_id 是**地址**不是身份：会话行拿它当主键，它一变就是新的一行，
@@ -779,57 +820,69 @@ class Store:
             self._db.commit()
 
     # ---------- AI 回复的对话上下文 ----------
-    def ai_ctx_read(self, wf_id, session_id, peer,
-                    mode="count", count=20, minutes=30):
-        """取一份上下文，按时间正序返回 [{"role","content"}]。
+    def ai_ctx_pick(self, wf_id, talk_id, mode="count", turns=10, minutes=30):
+        """决定这轮该用哪个 sid，并把它已有的上下文取出来。
 
-        session_id 走 siblings 展开 —— chat_id 漂移过的会话在库里是多行，
-        和 get_messages 一个路子；不展开的话对方换个会话 id 上下文就断了。
+        -> (sid, [{"role","content"}], is_new)
+
+        超限判定和动作里配的 ctx_mode 一致，二选一：
+          count  这个 sid 已经聊满 N 轮(数 role='user' 的行) -> 换新 sid
+          time   距这个 sid **最后一行**超过 N 分钟          -> 换新 sid
+        比最后一行而不是第一行 = "闲置多久算新对话"：聊得勤就一直续着。
+        换新 sid 时返回空上下文 —— 这就是清零重来，不是滑动窗口。
         """
-        ids = self.siblings(session_id) or [session_id]
-        ph  = ",".join("?" * len(ids))
-        sql = ("SELECT role, content FROM ai_context WHERE wf_id=? AND peer=?"
-               " AND session_id IN (%s)" % ph)
-        args = [str(wf_id or ""), str(peer or "")] + ids
-        if mode == "time":
-            sql += " AND ts>=? ORDER BY seq ASC"
-            args.append(int(time.time()) - max(1, int(minutes or 30)) * 60)
-            rev = False
-        else:
-            sql += " ORDER BY seq DESC LIMIT ?"
-            args.append(max(1, min(int(count or 20), 100)))
-            rev = True                    # 取的是最近 N 条, 倒回来才是时间序
+        wf_id, talk_id = str(wf_id or ""), str(talk_id or "")
         with self._lock:
-            rows = self._db.execute(sql, args).fetchall()
-        if rev:
-            rows = list(reversed(rows))
-        return [{"role": r["role"], "content": r["content"]}
-                for r in rows if (r["content"] or "").strip()]
+            last = self._db.execute(
+                "SELECT sid, ts FROM ai_context WHERE wf_id=? AND talk_id=?"
+                " ORDER BY seq DESC LIMIT 1", (wf_id, talk_id)).fetchone()
+            if last and last["sid"]:
+                if mode == "time":
+                    over = (int(time.time()) - int(last["ts"] or 0)) \
+                           > max(1, int(minutes or 30)) * 60
+                else:
+                    n = self._db.execute(
+                        "SELECT COUNT(*) c FROM ai_context WHERE wf_id=? AND talk_id=?"
+                        " AND sid=? AND role='user'",
+                        (wf_id, talk_id, last["sid"])).fetchone()["c"]
+                    over = n >= max(1, min(int(turns or 10), AI_CTX_TURNS))
+            else:
+                over = True                       # 这个人第一次说话
+            if over:
+                return "s_" + os.urandom(4).hex(), [], True
+            rows = self._db.execute(
+                "SELECT role, content FROM ai_context WHERE wf_id=? AND talk_id=?"
+                " AND sid=? ORDER BY seq ASC",
+                (wf_id, talk_id, last["sid"])).fetchall()
+        return last["sid"], [{"role": r["role"], "content": r["content"]}
+                             for r in rows if (r["content"] or "").strip()], False
 
-    def ai_ctx_append(self, wf_id, session_id, peer, turns, keep=200):
-        """追加几行(通常是 user 提问 + assistant 回答)，顺手裁掉超出 keep 的旧行。
+    def ai_ctx_append(self, wf_id, talk_id, chat_type, sid, turns,
+                      keep=AI_CTX_KEEP):
+        """追加几行(通常是 user 提问 + assistant 回答)，顺手裁掉旧行。
 
-        裁剪按 (工作流, 会话, 人) 这一份单独算 —— 一个热闹的群不该把另一个人
-        的上下文挤没。
+        裁剪按 (wf_id, talk_id) 算、**跨 sid** —— 旧对话留着做历史，但一个人
+        在一个群里不能无限长。一个热闹的群也不该把另一个人的上下文挤没，
+        所以裁剪键里带着 talk_id。
         """
         now = int(time.time())
-        rows = [(str(wf_id or ""), str(session_id or ""), str(peer or ""),
-                 str(r), str(c), now) for r, c in turns if str(c or "").strip()]
+        k = (str(wf_id or ""), str(talk_id or ""))
+        rows = [k + (str(chat_type or ""), str(sid or ""), str(r), str(c), now)
+                for r, c in turns if str(c or "").strip()]
         if not rows:
             return 0
-        k = (str(wf_id or ""), str(session_id or ""), str(peer or ""))
         with self._lock:
             try:
                 self._db.executemany(
-                    "INSERT INTO ai_context(wf_id,session_id,peer,role,content,ts)"
-                    " VALUES(?,?,?,?,?,?)", rows)
+                    "INSERT INTO ai_context(wf_id,talk_id,chat_type,sid,role,content,ts)"
+                    " VALUES(?,?,?,?,?,?,?)", rows)
                 # 第 keep+1 新的那行的 seq 就是删除水位；不够 keep 行时子查询
                 # 返回 NULL，`seq <= NULL` 谁也删不掉，正好
                 self._db.execute(
-                    "DELETE FROM ai_context WHERE wf_id=? AND session_id=? AND peer=?"
+                    "DELETE FROM ai_context WHERE wf_id=? AND talk_id=?"
                     " AND seq <= (SELECT seq FROM ai_context WHERE wf_id=?"
-                    "   AND session_id=? AND peer=? ORDER BY seq DESC"
-                    "   LIMIT 1 OFFSET ?)", k + k + (max(1, int(keep or 200)),))
+                    "   AND talk_id=? ORDER BY seq DESC LIMIT 1 OFFSET ?)",
+                    k + k + (max(1, int(keep or AI_CTX_KEEP)),))
                 self._db.commit()
             except Exception:
                 self._db.rollback()

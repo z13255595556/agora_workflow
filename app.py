@@ -1957,7 +1957,7 @@ def main():
     st = CONFIG.get("storage") or {}
     STORE = Store(_resolve(st.get("db_file") or "gateway.db"),
                   st.get("max_msg_per_session", 5000),
-                  st.get("max_workflow_runs", 2000))
+                  st.get("max_workflow_runs", 2000), log=log)
     directory_boot()        # 通讯录/群列表：先读库直接可用，后台再去上游更新
     WF = WorkflowEngine(BASE_DIR, _wf_send, log,
                         resolve_name=lambda i: NAME_MAP.get(i, i),

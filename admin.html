@@ -708,7 +708,7 @@ function actSummary(w){
   return (w.actions||[]).map(a=>{
     if(a.type==='reply') return `<span class="bdg blue">自定义回复</span>`;
     if(a.type==='ai') return `<span class="bdg green">AI 回复${a.bailian!==false?' · 百炼':''}
-      · 上下文${a.ctx_mode==='time'?`${a.ctx_minutes||30}分钟`:`${a.ctx_count||20}条`}</span>`;
+      · ${a.ctx_mode==='time'?`闲置${a.ctx_minutes||30}分钟`:`满${a.ctx_count||10}轮`}换新对话</span>`;
     return `<span class="bdg amber">调用接口${a.reply?' · 回复返回值':''}</span>`;
   }).join('')||'<span class="bdg red">无动作</span>';
 }
@@ -986,8 +986,8 @@ function actPhrase(a,sched){
     const miss=a.bailian!==false
       ? (a.app_id||a.url?'':' <span class="miss">未填应用 ID</span>')
       : (a.url?'':' <span class="miss">未填接口地址</span>');
-    const ctx=a.ctx_mode==='time'?`最近 ${a.ctx_minutes||30} 分钟`:`最近 ${a.ctx_count||20} 条`;
-    return `<span class="kw">AI 回复</span>${miss}（带上 ${ctx}对话）`;
+    const ctx=a.ctx_mode==='time'?`闲置 ${a.ctx_minutes||30} 分钟`:`满 ${a.ctx_count||10} 轮`;
+    return `<span class="kw">AI 回复</span>${miss}（${ctx}算新对话）`;
   }
   return `调用接口${a.url?'':' <span class="miss">未填地址</span>'}${
     a.reply?(sched?' <span class="miss">但定时触发没有来源会话，回复不了</span>':'并回复结果'):''}`;
@@ -1236,7 +1236,7 @@ function renderEditor(){
     timeout_sec:10,retries:1,reply:true,reply_path:'',reply_template:'{result}'});renderActions();};
   $('#btnAddAi').onclick=()=>{collectActions();M.actions.push({type:'ai',bailian:true,quote:true,mention:true,
     url:'',app_id:'',api_key:'',headers:'',extra:'',reply_path:'',
-    ctx_mode:'count',ctx_count:20,ctx_minutes:30,
+    ctx_mode:'count',ctx_count:10,ctx_minutes:30,
     timeout_sec:60,retries:1,reply_template:'{result}'});renderActions();};
   $('#btnRefreshMem').onclick=()=>syncSenderList(true);   // 只有这个按钮会真的重拉群列表
   $('#btnRunTest').onclick=runTest;
@@ -1410,15 +1410,15 @@ function renderActions(){
         <div class="ffield" style="flex:0 0 200px"><div class="lab">提取路径<span class="tip">留空= choices.0.message.content</span></div>
           <input type="text" class="aIn" data-i="${i}" data-k="reply_path" value="${esc(a.reply_path||'')}" style="font-family:var(--mono)"></div></div>
       <div class="frow">
-        <div class="ffield" style="flex:0 0 190px"><div class="lab">上下文取法</div>
+        <div class="ffield" style="flex:0 0 190px"><div class="lab">什么时候算新对话</div>
           <div class="seg aCtxSeg" data-i="${i}">
-            <button data-v="count" class="${a.ctx_mode!=='time'?'on':''}">按条数</button>
-            <button data-v="time" class="${a.ctx_mode==='time'?'on':''}">按时间</button></div></div>
+            <button data-v="count" class="${a.ctx_mode!=='time'?'on':''}">按轮数</button>
+            <button data-v="time" class="${a.ctx_mode==='time'?'on':''}">按闲置</button></div></div>
         <div class="ffield ctxCnt ${a.ctx_mode==='time'?'hide':''}" data-i="${i}">
-          <div class="lab">最近几条<span class="tip">一问一答算 2 条，1–100</span></div>
-          <input type="number" class="aIn" data-i="${i}" data-k="ctx_count" min="1" max="100" value="${a.ctx_count||20}"></div>
+          <div class="lab">一次对话最多几轮<span class="tip">一问一答算 1 轮；聊满了下一句从零开始，1–50</span></div>
+          <input type="number" class="aIn" data-i="${i}" data-k="ctx_count" min="1" max="50" value="${a.ctx_count||10}"></div>
         <div class="ffield ctxMin ${a.ctx_mode==='time'?'':'hide'}" data-i="${i}">
-          <div class="lab">最近几分钟<span class="tip">超时的旧对话不再带上，1–1440</span></div>
+          <div class="lab">闲置多久算新对话<span class="tip">分钟。隔这么久没说话，下一句从零开始，1–1440</span></div>
           <input type="number" class="aIn" data-i="${i}" data-k="ctx_minutes" min="1" max="1440" value="${a.ctx_minutes||30}"></div></div>
       <div class="frow">
         <div class="ffield"><div class="lab">附加参数<span class="tip">JSON，浅合并进请求体；<code>system</code> 键会变成消息列表最前面那条</span></div>
@@ -1433,7 +1433,7 @@ function renderActions(){
           <input type="number" class="aIn" data-i="${i}" data-k="retries" min="0" max="3" value="${a.retries??1}"></div></div>
       <div class="ffield"><div class="lab">回复模板<span class="tip">留空 = 原样发模型的回答</span></div>
         <input type="text" class="aIn" data-i="${i}" data-k="reply_template" value="${esc(a.reply_template||'{result}')}"></div>
-      <div class="varhint">上下文按 <b>(工作流 / 会话 / 人)</b> 单独存 —— 群里两个人同时 @ 机器人各聊各的。
+      <div class="varhint">上下文按 <b>群 + 人</b> 单独存 —— 群里两个人同时 @ 机器人各聊各的，私聊和群聊也分开。
         <code>{result}</code> 是模型的回答，另支持 {content} {sender_name} 等</div>
       </div></div>`;
     }

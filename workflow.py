@@ -19,8 +19,9 @@ workflow.py — 消息工作流引擎 (纯标准库)
                可把返回内容(支持 JSON 路径提取)按模板回复到来源会话
     ai         AI 回复。和 http 的区别只有一个：请求体不用你写，引擎按这个人
                和机器人之前聊过的话拼 messages[]。上下文存在 ai_context 表，
-               键是(工作流, 会话, 人) —— 群里两个人同时@机器人各聊各的。
-               默认走百炼(DashScope)应用接口，关掉开关就是 OpenAI 兼容形态
+               按 talk_id(群"imRoomId_人id" / 私聊"人id")隔离 —— 群里两个人
+               同时@机器人各聊各的；聊满设定轮数或闲置超时就换一个 sid，
+               等于清零重开。默认走百炼应用接口，关掉开关是 OpenAI 兼容形态
 
   高可用设计：
     * 动作在后台 worker 线程池执行，DLL 推送线程永不被 HTTP 阻塞
@@ -247,7 +248,8 @@ class WorkflowEngine:
                 a["mention"] = bool(a.get("mention", True))
                 a["ctx_mode"] = (a.get("ctx_mode")
                                  if a.get("ctx_mode") in ("count", "time") else "count")
-                a["ctx_count"]   = min(100, max(1, int(a.get("ctx_count") or 20)))
+                # 单位是**轮**(一问一答=1轮=表里2行)，不是条
+                a["ctx_count"]   = min(50, max(1, int(a.get("ctx_count") or 10)))
                 a["ctx_minutes"] = min(1440, max(1, int(a.get("ctx_minutes") or 30)))
                 # AI 接口慢，默认给 60 秒(http 动作是 10 秒)
                 a["timeout_sec"] = min(1900, max(1, int(a.get("timeout_sec") or 60)))
@@ -791,10 +793,12 @@ class WorkflowEngine:
         """带上下文调模型，把回答发回来源会话。
 
         和「调用接口」的区别只有一个：请求体不用你写，引擎按这个人和机器人
-        之前聊过的话拼 messages[]。上下文存在 ai_context 表里，键是
-        (工作流, 会话, 人) —— 群里两个人同时 @ 机器人，各聊各的。
+        之前聊过的话拼 messages[]。上下文存在 ai_context 表里，两层 id：
+          talk_id  用户维度，群 "imRoomId_人id" / 私聊 "人id"
+          ai_sid   送模型的那次会话，聊满/闲久了换新的 = 清零重来
         """
-        sid  = ctx.get("source") or ""
+        sid  = ctx.get("source") or ""      # ⚠️ 聊天会话**地址** "R:"/"S:"+chat_id
+                                            #    和下面的 ai_sid 同名不同义
         # @ 用的是**企微那套**人 id(external_contact_id = imContactId = wxid)。
         # 实测(直接打语聚发送接口)：
         #   ["1688851163628036"]  external_contact_id 数组 -> Code 2000 ✅
@@ -806,11 +810,21 @@ class WorkflowEngine:
         # 白往返；正文前缀照样加，只是没有真 @ 的红点。
         ment_id = str(((msg.get("jjy") or {}).get("addition") or {})
                       .get("external_contact_id") or "")
-        # 上下文的键：user_id 优先(每条推送都有)，缺了退到 external_contact_id。
-        # 两个都没有就是 peer="" —— 那样同一个群里所有人会挤进同一份上下文，
-        # A 问的话 B 下一轮就读到了(实测过)。所以这种情况**整个不碰上下文**，
-        # 当成一次性问答，宁可没记忆也不能串台。
-        peer = str(msg.get("sender") or "") or ment_id
+        # talk_id = 用户维度的唯一标识，两个 or 都是给**非企微渠道**兜底
+        # (抖音/小红书/钉钉的推送既没 room_id 也没 external_contact_id，不兜的话
+        #  那类群会全塌成同一个 talk_id，A 问的话 B 下一轮就读到了)：
+        #   人  external_contact_id 优先(实测跨群稳定)，没有就退回推送的 user_id
+        #   群  imRoomId，没有就退回聊天会话地址
+        # 私聊不带群那一维：一个人只有一个私聊，人 id 本身就够。
+        # 两个人 id 都拿不到时 peer_uid 为空 —— 那时**整个不碰上下文**，
+        # 当一次性问答，宁可没记忆也不能串台。
+        peer_uid = ment_id or str(msg.get("sender") or "")
+        if sid.startswith("R:"):
+            room_id  = str((msg.get("jjy") or {}).get("room_id") or "") or sid
+            talk_id  = "%s_%s" % (room_id, peer_uid)
+            chat_type = "group"
+        else:
+            talk_id, chat_type = peer_uid, "private"
         if not sid:
             return {"action": "ai", "ok": False,
                     "detail": "没有来源会话（定时工作流用不了 AI 回复）"}
@@ -827,15 +841,17 @@ class WorkflowEngine:
         if idx:
             ck = "%s#%d" % (ck, idx)
 
-        # ---- 上下文：历史 + 当前这句。历史读失败就按第一轮处理，不让它挡着回话 ----
-        hist = []
-        if self.store and peer:
+        # ---- 上下文：先定这轮属于哪个 ai_sid，再把它已有的对话取出来 ----
+        # 读失败就按第一轮处理，不让它挡着回话。
+        ai_sid, hist, is_new = "", [], True
+        if self.store and peer_uid:
             try:
-                hist = self.store.ai_ctx_read(
-                    ck, sid, peer, mode=a.get("ctx_mode"),
-                    count=a.get("ctx_count"), minutes=a.get("ctx_minutes"))
+                ai_sid, hist, is_new = self.store.ai_ctx_pick(
+                    ck, talk_id, mode=a.get("ctx_mode"),
+                    turns=a.get("ctx_count"), minutes=a.get("ctx_minutes"))
             except Exception as e:
                 self.log.warning("读取 AI 上下文失败，这轮按无上下文处理: %s", e)
+                ai_sid = ""
         messages = hist + [{"role": "user", "content": ask}]
 
         # ---- 附加参数：浅合并进请求体顶层；system 单独拎出来放消息列表最前 ----
@@ -879,8 +895,8 @@ class WorkflowEngine:
 
         if dry:
             return {"action": "ai", "ok": True,
-                    "detail": "预览 · %s · 上下文 %d 条 · 请求体 %s" % (
-                        url[:60], len(messages),
+                    "detail": "预览 · %s · %s · 请求体 %s" % (
+                        url[:60], self._ai_ctx_desc(is_new, hist),
                         json.dumps(body, ensure_ascii=False)[:400])}
 
         status, raw, err, tries = self._request(
@@ -889,7 +905,7 @@ class WorkflowEngine:
         if err:
             return {"action": "ai", "ok": False,
                     "detail": "调用失败(尝试%d次): %s" % (tries, err)}
-        detail = "HTTP %s · 上下文 %d 条" % (status, len(messages))
+        detail = "HTTP %s · %s" % (status, self._ai_ctx_desc(is_new, hist))
 
         result, perr = self._ai_answer(raw, bailian, a.get("reply_path"))
         if perr:
@@ -907,7 +923,7 @@ class WorkflowEngine:
         ment, qid = None, ""
         if sid.startswith("R:"):
             if a.get("mention"):
-                text = "@%s %s" % (ctx.get("sender_name") or peer, text)
+                text = "@%s %s" % (ctx.get("sender_name") or peer_uid, text)
                 if ment_id:
                     ment = [ment_id]
             if a.get("quote"):
@@ -919,13 +935,18 @@ class WorkflowEngine:
 
         # 发出去了才落库。模型答了但没发成也不写 —— 对方根本没看见这句，
         # 记进上下文只会让下一轮基于一段从未发生过的对话往下编。
-        if self.store and peer:
+        if self.store and peer_uid and ai_sid:
             try:
-                self.store.ai_ctx_append(ck, sid, peer,
+                self.store.ai_ctx_append(ck, talk_id, chat_type, ai_sid,
                                          [("user", ask), ("assistant", result)])
             except Exception as e:
                 self.log.warning("AI 上下文落库失败(这轮不影响回复): %s", e)
         return {"action": "ai", "ok": True, "detail": detail + " · 已回复：" + text[:80]}
+
+    @staticmethod
+    def _ai_ctx_desc(is_new, hist):
+        """运行记录里一眼看出这轮是接着聊还是清零重开。"""
+        return "新对话" if is_new else "接着聊(带 %d 轮历史)" % (len(hist) // 2)
 
     def _ai_answer(self, raw, bailian, path=""):
         """从响应里取回复文本。返回 (text, err)。"""
