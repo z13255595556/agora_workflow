@@ -756,12 +756,22 @@ class Store:
                 "sender": r["sender"], "content": r["content"],
                 "ok": bool(r["ok"]), "results": results}
 
-    def get_runs(self, before=None, wf_id=None, limit=50):
-        """游标分页取运行明细(最新在前)。before=seq 取更早的。返回 (list, has_more)。"""
+    def get_runs(self, before=None, wf_id=None, limit=50, view_max=0):
+        """游标分页取运行明细(最新在前)。before=seq 取更早的。返回 (list, has_more)。
+
+        view_max>0 = **只让翻到最近这么多条为止**。库里是全留着的(add_run 默认
+        不裁)，这只是前台的可见窗口 —— 不设的话记录攒到几十万条，"加载更多"
+        能一路点到开天辟地。窗口按当前筛选算：按工作流筛选时就是那条工作流的
+        最近 view_max 条。
+        """
         limit = max(1, min(200, int(limit or 50)))
         where, args = [], []
         if wf_id:
             where.append("wf_id=?"); args.append(str(wf_id))
+        if int(view_max or 0) > 0:
+            floor = self._runs_floor(wf_id, int(view_max))
+            if floor:
+                where.append("seq>=?"); args.append(floor)
         if before:
             where.append("seq<?"); args.append(int(before))
         wsql = ("WHERE " + " AND ".join(where)) if where else ""
@@ -771,6 +781,18 @@ class Store:
                 (*args, limit + 1)).fetchall()
         has_more = len(rows) > limit
         return [self._run_dict(r) for r in rows[:limit]], has_more
+
+    def _runs_floor(self, wf_id, view_max):
+        """可见窗口的下界：第 view_max 新那条的 seq。不足 view_max 条时返回 0。"""
+        sql = "SELECT seq FROM workflow_runs"
+        args = []
+        if wf_id:
+            sql += " WHERE wf_id=?"; args.append(str(wf_id))
+        sql += " ORDER BY seq DESC LIMIT 1 OFFSET ?"
+        args.append(view_max - 1)
+        with self._lock:
+            r = self._db.execute(sql, args).fetchone()
+        return int(r["seq"]) if r else 0
 
     def seed_counter(self, wf_id, runs, fails, last_at):
         """迁移用：仅当该工作流还没有计数行时，写入历史累计值(已有则原样不动)。

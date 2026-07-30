@@ -19,6 +19,7 @@
     "db_file": "gateway.db",
     "max_msg_per_session": 5000,
     "max_workflow_runs": 0,
+    "workflow_runs_view": 2000,
     "ai_context_days": 7
   },
   "media": {

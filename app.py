@@ -91,6 +91,9 @@ DEFAULT_CONFIG = {
         # 裁剪是全局的(不分工作流)，一条高频工作流刷满就会把低频那条的历史挤没。
         # 表涨得受不了了再设个上限。改动需重启
         "max_workflow_runs": 0,
+        # 管理页运行记录能往回翻多少条。库里是全留着的，这只是**前台可见窗口** ——
+        # 不设的话记录攒多了"加载更多"能一路点到开天辟地。0=不限
+        "workflow_runs_view": 2000,
         # AI 回复上下文的保留天数。200 行/人 那个上限管不了"人越来越多"：
         # 一个客户问过一次就再不出现，那两行会永远躺着。按天过期是唯一会让
         # ai_context 缩回去的机制。0=不过期
@@ -1691,7 +1694,8 @@ class Handler(BaseHTTPRequestHandler):
             return self._send_json(WF.run_list(
                 before=_qs_int(qs, "before"),
                 limit=_qs_int(qs, "limit") or 50,
-                wf_id=(qs.get("wf") or [""])[0] or None))
+                wf_id=(qs.get("wf") or [""])[0] or None,
+                view_max=(CONFIG.get("storage") or {}).get("workflow_runs_view", 2000)))
         if p == "/gw/logs":
             return self._send_json({"logs": list(LOGS)[-200:]})
         if p == "/gw/raw-pushes":
@@ -2025,14 +2029,6 @@ def main():
              if jc.get("enabled") else "未启用")
     log.info("消息库    :  %s (会话 %d, 历史消息 %d)",
              _resolve(st.get("db_file") or "gateway.db"), s["sessions"], s["messages"])
-    # 保留策略当面说清楚：config.json 里显式写着 2000 的老配置，光改默认值没用
-    mr = int(st.get("max_workflow_runs") or 0)
-    log.info("运行记录  :  共 %d 条, %s", s["workflow_runs"],
-             ("只保留最近 %d 条 —— 想全留把 storage.max_workflow_runs 设成 0" % mr)
-             if mr > 0 else "全部保留")
-    log.info("AI 上下文 :  %s",
-             ("保留 %d 天" % st["ai_context_days"]) if int(st.get("ai_context_days") or 0) > 0
-             else "不过期（这张表就没人打扫了）")
     if mc.get("enabled", True):
         log.info("媒体      :  %s (图片自动下载=%s, 文件≤%sMB 自动下载)",
                  _media_root(), "开" if mc.get("image_auto", True) else "关",

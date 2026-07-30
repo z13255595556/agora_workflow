@@ -1051,10 +1051,14 @@ class WorkflowEngine:
             w["next_fire"] = self.next_fire(w)
         return out
 
-    def run_list(self, before=None, limit=50, wf_id=None):
-        """运行记录，游标分页(最新在前)。返回 {runs, has_more}。"""
+    def run_list(self, before=None, limit=50, wf_id=None, view_max=0):
+        """运行记录，游标分页(最新在前)。返回 {runs, has_more}。
+
+        view_max 是**前台可见窗口**，不是保留策略 —— 库里全留着，见 get_runs。
+        """
         if self.store:
-            runs, has_more = self.store.get_runs(before=before, wf_id=wf_id, limit=limit)
+            runs, has_more = self.store.get_runs(before=before, wf_id=wf_id,
+                                                 limit=limit, view_max=view_max)
             return {"runs": runs, "has_more": has_more}
         # 无持久化兜底：内存 deque，不支持真正游标，仅返回最近 limit 条
         with self._lock:
