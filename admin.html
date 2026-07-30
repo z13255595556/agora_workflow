@@ -423,6 +423,8 @@
     <div class="phd">
       <h2>运行记录</h2><span class="cnt" id="runCnt"></span>
       <div class="sp"></div>
+      <select id="runFilter" style="width:auto;padding:5px 8px;font-size:12.5px;margin-right:8px">
+        <option value="">全部工作流</option></select>
       <button class="btn sm" id="btnRunRefresh"><svg><use href="#i-sync"/></svg>刷新</button>
     </div>
     <div class="card" style="padding:6px 10px"><div style="overflow-x:auto">
@@ -1647,11 +1649,33 @@ function paintRuns(){
   $('#runEmpty').classList.toggle('hide',!!RUNS.length);
   $('#runMore').classList.toggle('hide',!RUN_MORE);
   $('#runBody').innerHTML=RUNS.map(runRowHTML).join('');
-  $('#runCnt').textContent=RUNS.length?`已加载 ${RUNS.length} 条${RUN_MORE?' · 可加载更早':''}`:'';
+  const wf=$('#runFilter')?.value||'';
+  $('#runCnt').textContent=(wf?'已筛选 · ':'')+
+    (RUNS.length?`已加载 ${RUNS.length} 条${RUN_MORE?' · 可加载更早':''}`:'');
+}
+// 筛选下拉的选项跟着工作流列表走。用 WORKFLOWS 而不是从记录里聚合 ——
+// 记录里只有跑过的，没跑过的那条也该能选中(看到"还没有记录")。
+function paintRunFilter(){
+  const sel=$('#runFilter'); if(!sel)return;
+  // 只在选项真的变了才重建：这个函数被 6 秒一次的自动刷新带着跑，无条件重写
+  // innerHTML 会在用户正把下拉拉开时把它顶掉
+  const sig=WORKFLOWS.map(w=>w.id+':'+(w.name||'')).join('|');
+  if(sel.dataset.sig===sig) return;
+  const cur=sel.value;
+  sel.innerHTML='<option value="">全部工作流</option>'+
+    WORKFLOWS.map(w=>`<option value="${esc(w.id)}">${esc(w.name||w.id)}</option>`).join('');
+  // 选中的工作流被删掉了就回到"全部"，别停在一个不存在的 id 上
+  sel.value=WORKFLOWS.some(w=>w.id===cur)?cur:'';
+  sel.dataset.sig=sig;
+}
+function runQuery(extra){
+  const wf=$('#runFilter')?.value||'';
+  return `gw/workflow-runs?limit=${RUN_PAGE}`+(wf?`&wf=${encodeURIComponent(wf)}`:'')+(extra||'');
 }
 async function loadRuns(){        // 刷新到第一页(最新)
   RUN_PAGED=false;
-  const j=await api(`gw/workflow-runs?limit=${RUN_PAGE}`);
+  paintRunFilter();
+  const j=await api(runQuery());
   RUNS=j.runs||[]; RUN_MORE=!!j.has_more;
   paintRuns();
 }
@@ -1659,12 +1683,13 @@ async function loadMoreRuns(){    // 追加更早的一页
   if(!RUNS.length) return loadRuns();
   RUN_PAGED=true;
   const before=RUNS[RUNS.length-1].seq;
-  const j=await api(`gw/workflow-runs?limit=${RUN_PAGE}&before=${before}`);
+  const j=await api(runQuery(`&before=${before}`));
   RUNS=RUNS.concat(j.runs||[]); RUN_MORE=!!j.has_more;
   paintRuns();
 }
 $('#btnRunRefresh').onclick=loadRuns;
 $('#btnRunMore').onclick=loadMoreRuns;
+$('#runFilter').onchange=loadRuns;
 // 自动刷新只在“停留在最新一页”时更新，翻阅历史时不打断
 setInterval(()=>{if(!$('#pane-runs').classList.contains('hide')&&!RUN_PAGED)loadRuns();},6000);
 
