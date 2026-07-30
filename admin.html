@@ -708,7 +708,7 @@ function actSummary(w){
   return (w.actions||[]).map(a=>{
     if(a.type==='reply') return `<span class="bdg blue">自定义回复</span>`;
     if(a.type==='ai') return `<span class="bdg green">AI 回复${a.bailian!==false?' · 百炼':''}
-      · ${a.ctx_mode==='time'?`闲置${a.ctx_minutes||30}分钟`:`满${a.ctx_count||10}轮`}换新对话</span>`;
+      · ${a.ctx_mode==='time'?`闲置${a.ctx_minutes||30}分钟清零`:`最近${a.ctx_count||10}轮`}</span>`;
     return `<span class="bdg amber">调用接口${a.reply?' · 回复返回值':''}</span>`;
   }).join('')||'<span class="bdg red">无动作</span>';
 }
@@ -986,8 +986,8 @@ function actPhrase(a,sched){
     const miss=a.bailian!==false
       ? (a.app_id||a.url?'':' <span class="miss">未填应用 ID</span>')
       : (a.url?'':' <span class="miss">未填接口地址</span>');
-    const ctx=a.ctx_mode==='time'?`闲置 ${a.ctx_minutes||30} 分钟`:`满 ${a.ctx_count||10} 轮`;
-    return `<span class="kw">AI 回复</span>${miss}（${ctx}算新对话）`;
+    const ctx=a.ctx_mode==='time'?`闲置 ${a.ctx_minutes||30} 分钟算新对话`:`带最近 ${a.ctx_count||10} 轮`;
+    return `<span class="kw">AI 回复</span>${miss}（${ctx}）`;
   }
   return `调用接口${a.url?'':' <span class="miss">未填地址</span>'}${
     a.reply?(sched?' <span class="miss">但定时触发没有来源会话，回复不了</span>':'并回复结果'):''}`;
@@ -1410,12 +1410,12 @@ function renderActions(){
         <div class="ffield" style="flex:0 0 200px"><div class="lab">提取路径<span class="tip">留空= choices.0.message.content</span></div>
           <input type="text" class="aIn" data-i="${i}" data-k="reply_path" value="${esc(a.reply_path||'')}" style="font-family:var(--mono)"></div></div>
       <div class="frow">
-        <div class="ffield" style="flex:0 0 190px"><div class="lab">什么时候算新对话</div>
+        <div class="ffield" style="flex:0 0 190px"><div class="lab">上下文怎么带</div>
           <div class="seg aCtxSeg" data-i="${i}">
             <button data-v="count" class="${a.ctx_mode!=='time'?'on':''}">按轮数</button>
             <button data-v="time" class="${a.ctx_mode==='time'?'on':''}">按闲置</button></div></div>
         <div class="ffield ctxCnt ${a.ctx_mode==='time'?'hide':''}" data-i="${i}">
-          <div class="lab">一次对话最多几轮<span class="tip">一问一答算 1 轮；聊满了下一句从零开始，1–50</span></div>
+          <div class="lab">带最近几轮<span class="tip">一问一答算 1 轮；滑动窗口，最老的一轮一轮掉出去，1–50</span></div>
           <input type="number" class="aIn" data-i="${i}" data-k="ctx_count" min="1" max="50" value="${a.ctx_count||10}"></div>
         <div class="ffield ctxMin ${a.ctx_mode==='time'?'':'hide'}" data-i="${i}">
           <div class="lab">闲置多久算新对话<span class="tip">分钟。隔这么久没说话，下一句从零开始，1–1440</span></div>

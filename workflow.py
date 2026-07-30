@@ -248,7 +248,8 @@ class WorkflowEngine:
                 a["mention"] = bool(a.get("mention", True))
                 a["ctx_mode"] = (a.get("ctx_mode")
                                  if a.get("ctx_mode") in ("count", "time") else "count")
-                # 单位是**轮**(一问一答=1轮=表里2行)，不是条
+                # 单位是**轮**(一问一答=1轮=表里2行)，不是条。
+                # 按轮数=滑动窗口带最近 N 轮；按闲置=闲置超时才清零(见 ai_ctx_pick)
                 a["ctx_count"]   = min(50, max(1, int(a.get("ctx_count") or 10)))
                 a["ctx_minutes"] = min(1440, max(1, int(a.get("ctx_minutes") or 30)))
                 # AI 接口慢，默认给 60 秒(http 动作是 10 秒)
@@ -896,7 +897,7 @@ class WorkflowEngine:
         if dry:
             return {"action": "ai", "ok": True,
                     "detail": "预览 · %s · %s · 请求体 %s" % (
-                        url[:60], self._ai_ctx_desc(is_new, hist),
+                        url[:60], self._ai_ctx_desc(is_new, hist, a.get("ctx_mode")),
                         json.dumps(body, ensure_ascii=False)[:400])}
 
         status, raw, err, tries = self._request(
@@ -905,7 +906,7 @@ class WorkflowEngine:
         if err:
             return {"action": "ai", "ok": False,
                     "detail": "调用失败(尝试%d次): %s" % (tries, err)}
-        detail = "HTTP %s · %s" % (status, self._ai_ctx_desc(is_new, hist))
+        detail = "HTTP %s · %s" % (status, self._ai_ctx_desc(is_new, hist, a.get("ctx_mode")))
 
         result, perr = self._ai_answer(raw, bailian, a.get("reply_path"))
         if perr:
@@ -944,9 +945,12 @@ class WorkflowEngine:
         return {"action": "ai", "ok": True, "detail": detail + " · 已回复：" + text[:80]}
 
     @staticmethod
-    def _ai_ctx_desc(is_new, hist):
-        """运行记录里一眼看出这轮是接着聊还是清零重开。"""
-        return "新对话" if is_new else "接着聊(带 %d 轮历史)" % (len(hist) // 2)
+    def _ai_ctx_desc(is_new, hist, mode):
+        """运行记录里一眼看出这轮带了多少历史、是不是刚清零。"""
+        if is_new:
+            return "新对话"
+        n = len(hist) // 2
+        return ("滑动窗口(带 %d 轮)" if mode != "time" else "接着聊(带 %d 轮)") % n
 
     def _ai_answer(self, raw, bailian, path=""):
         """从响应里取回复文本。返回 (text, err)。"""

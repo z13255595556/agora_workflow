@@ -132,8 +132,8 @@ CREATE TABLE IF NOT EXISTS directory(
 # 两层 id，别混：
 #   talk_id  用户维度。群 = "imRoomId_人id"，私聊 = "人id"。两个都是**身份**，
 #            聚合 chat_id 漂移了它也不变，所以上下文不会因为漂移断掉
-#   sid      送给模型的那一次会话。聊满设定的轮数、或闲置超过设定的分钟数就换
-#            一个新的 —— 换了等于清零重来(硬边界，不是滑动窗口)
+#   sid      送给模型的那一次会话。按闲置模式下，闲置超过设定分钟数就换
+#            一个新的(清零重来)；按轮数模式下一直沿用，靠滑动窗口控制长度
 # ⚠️ 这里的 sid 和库里别处的 session_id / sid("R:"+chat_id，聊天会话的**地址**)
 #    同名不同义，看代码时留神。
 # DDL 单独拎出来是因为 _premigrate() 要拿它重建老表。
@@ -821,41 +821,47 @@ class Store:
 
     # ---------- AI 回复的对话上下文 ----------
     def ai_ctx_pick(self, wf_id, talk_id, mode="count", turns=10, minutes=30):
-        """决定这轮该用哪个 sid，并把它已有的上下文取出来。
+        """决定这轮用哪个 sid，并把要喂给模型的上下文取出来。
 
         -> (sid, [{"role","content"}], is_new)
 
-        超限判定和动作里配的 ctx_mode 一致，二选一：
-          count  这个 sid 已经聊满 N 轮(数 role='user' 的行) -> 换新 sid
-          time   距这个 sid **最后一行**超过 N 分钟          -> 换新 sid
-        比最后一行而不是第一行 = "闲置多久算新对话"：聊得勤就一直续着。
-        换新 sid 时返回空上下文 —— 这就是清零重来，不是滑动窗口。
+        两种模式的行为**不只是数字不同**：
+          count(按轮数)  滑动窗口。sid 一直沿用，上下文取这个 talk_id 最近 N 轮，
+                         最老的一轮一轮掉出去 —— 渐进遗忘，不会聊到一半突然失忆
+          time(按闲置)   硬边界。距最后一行超过 N 分钟就换新 sid = 清零重来；
+                         没超就沿用，上下文是这个 sid 的全部
+        比最后一行而不是第一行 = "闲置多久算新对话"，聊得勤就一直续着。
         """
         wf_id, talk_id = str(wf_id or ""), str(talk_id or "")
         with self._lock:
             last = self._db.execute(
                 "SELECT sid, ts FROM ai_context WHERE wf_id=? AND talk_id=?"
                 " ORDER BY seq DESC LIMIT 1", (wf_id, talk_id)).fetchone()
-            if last and last["sid"]:
-                if mode == "time":
-                    over = (int(time.time()) - int(last["ts"] or 0)) \
-                           > max(1, int(minutes or 30)) * 60
-                else:
-                    n = self._db.execute(
-                        "SELECT COUNT(*) c FROM ai_context WHERE wf_id=? AND talk_id=?"
-                        " AND sid=? AND role='user'",
-                        (wf_id, talk_id, last["sid"])).fetchone()["c"]
-                    over = n >= max(1, min(int(turns or 10), AI_CTX_TURNS))
-            else:
-                over = True                       # 这个人第一次说话
-            if over:
-                return "s_" + os.urandom(4).hex(), [], True
+
+            if mode == "time":
+                if not (last and last["sid"]) or \
+                   (int(time.time()) - int(last["ts"] or 0)) > max(1, int(minutes or 30)) * 60:
+                    return "s_" + os.urandom(4).hex(), [], True
+                rows = self._db.execute(
+                    "SELECT role, content FROM ai_context WHERE wf_id=? AND talk_id=?"
+                    " AND sid=? ORDER BY seq ASC",
+                    (wf_id, talk_id, last["sid"])).fetchall()
+                return last["sid"], self._ctx_rows(rows), False
+
+            # 按轮数：一轮 = 一问一答 = 表里 2 行。取最近 2N 行再倒回来就是时间序。
+            # 落库时两行是一起写的，所以行数恒为偶数、窗口边界不会切在半轮上。
+            sid = last["sid"] if (last and last["sid"]) else "s_" + os.urandom(4).hex()
             rows = self._db.execute(
                 "SELECT role, content FROM ai_context WHERE wf_id=? AND talk_id=?"
-                " AND sid=? ORDER BY seq ASC",
-                (wf_id, talk_id, last["sid"])).fetchall()
-        return last["sid"], [{"role": r["role"], "content": r["content"]}
-                             for r in rows if (r["content"] or "").strip()], False
+                " ORDER BY seq DESC LIMIT ?",
+                (wf_id, talk_id, max(1, min(int(turns or 10), AI_CTX_TURNS)) * 2)).fetchall()
+        hist = self._ctx_rows(reversed(rows))
+        return sid, hist, not hist
+
+    @staticmethod
+    def _ctx_rows(rows):
+        return [{"role": r["role"], "content": r["content"]}
+                for r in rows if (r["content"] or "").strip()]
 
     def ai_ctx_append(self, wf_id, talk_id, chat_type, sid, turns,
                       keep=AI_CTX_KEEP):
