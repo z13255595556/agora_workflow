@@ -79,7 +79,9 @@ CREATE TABLE IF NOT EXISTS sessions(
   unread    INTEGER NOT NULL DEFAULT 0
 );
 
--- 工作流运行记录(明细，供分页浏览)。按 max_runs 只保留最近若干条。
+-- 工作流运行记录(明细，供分页浏览)。默认全部保留；max_runs>0 才裁剪，
+-- 而且裁剪是**全局**的(不分工作流) —— 一条高频工作流刷满上限就会把低频那条的
+-- 历史挤没，所以别轻易设。
 CREATE TABLE IF NOT EXISTS workflow_runs(
   seq         INTEGER PRIMARY KEY AUTOINCREMENT,   -- 全局游标(分页锚点)
   t           INTEGER NOT NULL DEFAULT 0,          -- 触发时间(秒)
@@ -159,10 +161,10 @@ AI_CTX_TURNS = 50       # 「带最近几轮」的上限
 
 
 class Store:
-    def __init__(self, db_file, max_per_session=5000, max_runs=2000, log=None):
+    def __init__(self, db_file, max_per_session=5000, max_runs=0, log=None):
         self.db_file = db_file
         self.max_per_session = int(max_per_session or 0)   # 0 = 不限制
-        self.max_runs = int(max_runs or 0)                 # 工作流运行明细保留条数, 0=不限制
+        self.max_runs = int(max_runs or 0)                 # 运行明细保留条数, 0=全部保留
         self._log = log                                    # 只给迁移用，喊一声就够
         self._lock = threading.RLock()
         self._db = sqlite3.connect(db_file, check_same_thread=False)
@@ -734,7 +736,7 @@ class Store:
                 self._db.execute(
                     "INSERT INTO wf_counters(wf_id,runs,fails,last_at) VALUES(?,1,?,?)",
                     (wid, fail, t))
-            # 明细裁剪：只留最新 max_runs 条
+            # 明细裁剪：默认关(max_runs=0)。开了就只留最新 max_runs 条
             if self.max_runs > 0:
                 self._db.execute(
                     "DELETE FROM workflow_runs WHERE seq <= COALESCE("

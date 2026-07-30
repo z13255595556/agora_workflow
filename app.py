@@ -87,7 +87,10 @@ DEFAULT_CONFIG = {
     "storage": {
         "db_file": "gateway.db",          # 消息数据库(SQLite), 相对路径按本目录解析
         "max_msg_per_session": 5000,      # 每会话最多保留条数, 0=不限制(改动需重启)
-        "max_workflow_runs": 2000,        # 工作流运行明细保留条数, 0=不限制(改动需重启)
+        # 工作流运行明细保留条数。默认 0=全部保留 —— 运行记录是排查现场，
+        # 裁剪是全局的(不分工作流)，一条高频工作流刷满就会把低频那条的历史挤没。
+        # 表涨得受不了了再设个上限。改动需重启
+        "max_workflow_runs": 0,
         # AI 回复上下文的保留天数。200 行/人 那个上限管不了"人越来越多"：
         # 一个客户问过一次就再不出现，那两行会永远躺着。按天过期是唯一会让
         # ai_context 缩回去的机制。0=不过期
@@ -1973,7 +1976,7 @@ def main():
     st = CONFIG.get("storage") or {}
     STORE = Store(_resolve(st.get("db_file") or "gateway.db"),
                   st.get("max_msg_per_session", 5000),
-                  st.get("max_workflow_runs", 2000), log=log)
+                  st.get("max_workflow_runs", 0), log=log)
     directory_boot()        # 通讯录/群列表：先读库直接可用，后台再去上游更新
     try:                    # 启动先扫一次，别等第一个小时的定时清理
         n = STORE.ai_ctx_gc(st.get("ai_context_days", 7))
@@ -2022,6 +2025,14 @@ def main():
              if jc.get("enabled") else "未启用")
     log.info("消息库    :  %s (会话 %d, 历史消息 %d)",
              _resolve(st.get("db_file") or "gateway.db"), s["sessions"], s["messages"])
+    # 保留策略当面说清楚：config.json 里显式写着 2000 的老配置，光改默认值没用
+    mr = int(st.get("max_workflow_runs") or 0)
+    log.info("运行记录  :  共 %d 条, %s", s["workflow_runs"],
+             ("只保留最近 %d 条 —— 想全留把 storage.max_workflow_runs 设成 0" % mr)
+             if mr > 0 else "全部保留")
+    log.info("AI 上下文 :  %s",
+             ("保留 %d 天" % st["ai_context_days"]) if int(st.get("ai_context_days") or 0) > 0
+             else "不过期（这张表就没人打扫了）")
     if mc.get("enabled", True):
         log.info("媒体      :  %s (图片自动下载=%s, 文件≤%sMB 自动下载)",
                  _media_root(), "开" if mc.get("image_auto", True) else "关",
