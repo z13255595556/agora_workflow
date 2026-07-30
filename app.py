@@ -87,7 +87,11 @@ DEFAULT_CONFIG = {
     "storage": {
         "db_file": "gateway.db",          # 消息数据库(SQLite), 相对路径按本目录解析
         "max_msg_per_session": 5000,      # 每会话最多保留条数, 0=不限制(改动需重启)
-        "max_workflow_runs": 2000         # 工作流运行明细保留条数, 0=不限制(改动需重启)
+        "max_workflow_runs": 2000,        # 工作流运行明细保留条数, 0=不限制(改动需重启)
+        # AI 回复上下文的保留天数。200 行/人 那个上限管不了"人越来越多"：
+        # 一个客户问过一次就再不出现，那两行会永远躺着。按天过期是唯一会让
+        # ai_context 缩回去的机制。0=不过期
+        "ai_context_days": 7
     },
     "media": {
         "enabled": True,
@@ -1175,11 +1179,23 @@ def media_worker():
             MEDIA_Q.task_done()
 
 def media_gc():
-    """定期清理：消息已被裁剪掉的孤儿媒体 + 超过保留天数的文件。"""
+    """定期清理：孤儿媒体 + 超过保留天数的文件，顺带清过期的 AI 上下文。
+
+    AI 上下文搭这趟车而不是自己起一个线程 —— 都是每小时一次的按天过期，
+    没必要为了一条 DELETE 多养一个线程。
+    """
     while True:
         time.sleep(3600)
         try:
+            n = STORE.ai_ctx_gc((CONFIG.get("storage") or {}).get("ai_context_days", 7))
+            if n:
+                log.info("AI 上下文清理: 删除过期 %d 行", n)
+        except Exception as e:
+            log.warning("AI 上下文清理失败: %s", e)
+        try:
             c = _mcfg()
+            if not c.get("enabled", True):
+                continue                       # 媒体关掉了，这趟只做上面的上下文清理
             keep = int(c.get("keep_days") or 0)
             # link 模式下本地根本没有文件, 按天数删记录只会把链接弄丢、还回收不了任何磁盘。
             # 传 0 让 orphan_media 只清"消息已被裁剪掉的孤儿", 不做时间过期。
@@ -1959,6 +1975,13 @@ def main():
                   st.get("max_msg_per_session", 5000),
                   st.get("max_workflow_runs", 2000), log=log)
     directory_boot()        # 通讯录/群列表：先读库直接可用，后台再去上游更新
+    try:                    # 启动先扫一次，别等第一个小时的定时清理
+        n = STORE.ai_ctx_gc(st.get("ai_context_days", 7))
+        if n:
+            log.info("AI 上下文清理: 删除超过 %s 天的 %d 行",
+                     st.get("ai_context_days", 7), n)
+    except Exception as e:
+        log.warning("AI 上下文清理失败: %s", e)
     WF = WorkflowEngine(BASE_DIR, _wf_send, log,
                         resolve_name=lambda i: NAME_MAP.get(i, i),
                         classify=classify_sender, store=STORE)
@@ -1975,12 +1998,13 @@ def main():
                     "公网环境务必配上 company_id 白名单")
 
     # 媒体下载 worker + 清理线程。重启后把上次没下完的重新排队(含 state=1 的中断项)
+    # gc 线程无条件起：它现在还管 AI 上下文的按天过期，那件事和媒体开不开无关
+    threading.Thread(target=media_gc, name="gc", daemon=True).start()
     mc = _mcfg()
     if mc.get("enabled", True):
         for i in range(max(1, int(mc.get("workers") or 1))):
             threading.Thread(target=media_worker, name="media-%d" % i,
                              daemon=True).start()
-        threading.Thread(target=media_gc, name="media-gc", daemon=True).start()
         resume = STORE.pending_media()
         for mid in resume:
             MEDIA_Q.put(mid)

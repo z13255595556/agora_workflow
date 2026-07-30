@@ -146,9 +146,12 @@ CREATE TABLE IF NOT EXISTS ai_context(
   sid       TEXT    NOT NULL DEFAULT '',
   role      TEXT    NOT NULL DEFAULT '',         -- user | assistant
   content   TEXT    NOT NULL DEFAULT '',
+  date      TEXT    NOT NULL DEFAULT '',         -- YYYY-MM-DD 本地日期, 给人看/按天统计
   ts        INTEGER NOT NULL DEFAULT 0
 );
 CREATE INDEX IF NOT EXISTS ix_ai_ctx ON ai_context(wf_id, talk_id, seq);
+-- 过期清理扫的是 ts，单独给它一个索引，别每次都全表扫
+CREATE INDEX IF NOT EXISTS ix_ai_ctx_ts ON ai_context(ts);
 """
 _SCHEMA += _AI_CTX_DDL
 
@@ -225,6 +228,15 @@ class Store:
             if name not in scols:
                 self._db.execute(
                     "ALTER TABLE sessions ADD COLUMN %s %s" % (name, decl))
+
+        # ai_context 的 date 列是后加的：上一版建的库是新形态(talk_id/sid)但没有
+        # 这一列，_premigrate 那条重建路只认老形态、不会碰它。加列 + 拿 ts 回填，
+        # 不回填的话老行 date 是空串，"按天看/按天统计"就有一段窟窿。
+        acols = {r["name"] for r in self._db.execute("PRAGMA table_info(ai_context)")}
+        if acols and "date" not in acols:
+            self._db.execute("ALTER TABLE ai_context ADD COLUMN date TEXT NOT NULL DEFAULT ''")
+            self._db.execute(
+                "UPDATE ai_context SET date=date(ts,'unixepoch','localtime') WHERE date=''")
 
 
     # ---------- 身份 ↔ 地址 ----------
@@ -872,16 +884,17 @@ class Store:
         所以裁剪键里带着 talk_id。
         """
         now = int(time.time())
+        day = time.strftime("%Y-%m-%d", time.localtime(now))
         k = (str(wf_id or ""), str(talk_id or ""))
-        rows = [k + (str(chat_type or ""), str(sid or ""), str(r), str(c), now)
+        rows = [k + (str(chat_type or ""), str(sid or ""), str(r), str(c), day, now)
                 for r, c in turns if str(c or "").strip()]
         if not rows:
             return 0
         with self._lock:
             try:
                 self._db.executemany(
-                    "INSERT INTO ai_context(wf_id,talk_id,chat_type,sid,role,content,ts)"
-                    " VALUES(?,?,?,?,?,?,?)", rows)
+                    "INSERT INTO ai_context(wf_id,talk_id,chat_type,sid,role,content,date,ts)"
+                    " VALUES(?,?,?,?,?,?,?,?)", rows)
                 # 第 keep+1 新的那行的 seq 就是删除水位；不够 keep 行时子查询
                 # 返回 NULL，`seq <= NULL` 谁也删不掉，正好
                 self._db.execute(
@@ -894,6 +907,23 @@ class Store:
                 self._db.rollback()
                 raise
         return len(rows)
+
+    def ai_ctx_gc(self, days=7):
+        """删掉超过 days 天的上下文。返回删除行数。
+
+        200 行/talk_id 那个上限管的是"单个人聊太多"，管不了"人越来越多" ——
+        一个客户问过一次就再不出现，那两行会永远躺着。按天过期是唯一会让这张
+        表缩回去的机制。
+        days<=0 = 不过期(留给不想删的人)。
+        """
+        d = int(days or 0)
+        if d <= 0:
+            return 0
+        with self._lock:
+            cur = self._db.execute("DELETE FROM ai_context WHERE ts < ?",
+                                   (int(time.time()) - d * 86400,))
+            self._db.commit()
+        return cur.rowcount or 0
 
     # ---------- 通讯录/群列表快照 ----------
     def save_directory(self, kind, items, full=True):
