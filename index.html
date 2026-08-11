@@ -632,10 +632,11 @@ function bubbleHTML(m,prev){
     ? `${qUp}<div class="wa-bubble media" data-mkey="${m.media.id}">${mediaHTML(m)}</div>`
     : rich ? `${qUp}<div class="wa-bubble media">${rich}</div>`
     : `<div class="wa-bubble">${qIn}${esc(m.content)}</div>`;
-  // 引用和撤回都要拿语聚那边的 message_id 去调接口，而那个 id **只有推送里有**：
-  // 发送接口的响应不给 message_id，语聚也不回推 API 发出去的消息(实测)。
-  // 所以自己发的那条挂的是 local: 占位 id，操作条直接不给 —— 给了必然失败。
-  // 引用和撤回都填 msg_id(报文里 message.message_id 那个 "api_<uuid>i")。
+  // 引用和撤回都要拿语聚那边的 message_id 去调接口，填 msg_id(报文里
+  // message.message_id 那个 "api_<uuid>i")。自己发的消息现在也有真 id ——
+  // 语聚会把 API 发出去的消息回推回来，库里那条就是回声那条。
+  // local: 是历史包袱：早先语聚不回推，自己发的只能挂本地占位 id 补录一条，
+  // 老库里还有这种行 —— 给操作条点下去必然失败，所以照旧不给。
   // ⚠️ 别改成 message_content.message_id —— 收到的引用块里 quote_message_id
   // 确实是那个 32 位 hex，但发送接口的 quoteMessageId 不认它(A/B 实测过)。
   const rid=(m.id&&!String(m.id).startsWith('local:'))?m.id:'';

@@ -528,56 +528,23 @@ def jjy_send(conversation_id, message_type, message_content, meta=None, api_key=
     return False, err or "发送失败"
 
 
-def _quote_rich(conversation_id, quote_id):
-    """自己发的引用消息，补录时也要带上引用块，不然入库那条只剩正文
-    （乐观气泡上那个引用块会被入库的这条替换掉，看着像"引用没生效"）。
-
-    被引用消息的发送人和原文从**自己库里**查，不让前端传 ——
-    那是要展示给人看的内容，从库里取才和别处显示的一致。
-    """
-    if not (quote_id and STORE):
-        return None
-    src = STORE.get_by_msg_id(conversation_id, quote_id)
-    if not src:
-        return None
-    kind = {CT_IMAGE: "image", CT_GIF: "image", CT_FILE: "file",
-            CT_VIDEO: "video", CT_VOICE: "voice"}.get(src.get("msg_type"), "text")
-    return {"quote": {"id": str(quote_id),
-                      "sender": src.get("sender_name") or "",
-                      "content": src.get("content") or "",
-                      "mtype": kind}}
-
-
-def _record_sent(conversation_id, text, quote_id=""):
-    """把自己发出去的消息补录进库。
-
-    ⚠️ 语聚**不会**把 OpenAPI 发出去的消息推回来（实测 sent +2 而 received 为 0，
-    同期别的推送照常进来）。所以不补录的话，前端那个气泡只是本地占位，
-    一刷新就没了。(语聚自己的 AI 规则发的回复倒是走消息事件，两条路不一样。)
-
-    msg_id 用 local: 前缀的本地 id —— 发送接口的响应里没有 message_id，
-    拿不到语聚那边的真 id 就引用不了也撤回不了，前端据此不给这两个按钮。
-    """
-    if not STORE:
-        return
-    try:
-        store_message({
-            "type": PUSH_CHAT, "msg_type": MSG_TEXT,
-            "user_id": conversation_id, "sender": "", "sender_name": "我",
-            "content": text, "time_stamp": int(time.time()),
-            "msg_id": "local:" + uuid.uuid4().hex,
-            "is_self_msg": 1, "at_me": 0, "sender_external": 0,
-            "rich": _quote_rich(conversation_id, quote_id),
-            "jjy": {"mt": 2, "chat_id": jjy.raw_chat_id(conversation_id),
-                    "local": True},
-        })
-    except Exception as e:
-        # 补录失败不该让"其实已经发出去了"变成"发送失败"
-        log.warning("已发送但补录入库失败 %s: %s", conversation_id, e)
-
-
 def send_text_ex(conversation_id, msg, quote_id="", mention=None):
-    """发文本，返回 (ok, err)。前端要拿 err 显示，所以和 send_text 分成两个。"""
+    """发文本，返回 (ok, err)。前端要拿 err 显示，所以和 send_text 分成两个。
+
+    ⚠️ **发出去的消息不在这里入库** —— 语聚会把 OpenAPI 发的消息回推给我们：
+
+        "message_trigger_type": 1, "message_trigger_name": "API请求",
+        "message_forward_type": "outgoing", "user_type": 6,
+        "message_id": "api_49c00f65-dc37-4806-a40f-8a60bf95b347"
+
+    早先不是这样(实测过 sent +2 而 received 为 0)，那时候只能本地补录一条挂
+    `local:` 占位 id。上游行为变了之后补录就成了第二条 —— 工作台里同一句回复
+    显示两遍。所以现在只认回声：入库、SSE、前端替换乐观气泡全走 store_message()
+    那一条路，而且拿到的是**真** message_id，自己发的消息也能引用和撤回了。
+
+    回声照样是 `outgoing` -> `is_self_msg=1`，on_message() 只入库不触发工作流，
+    回环防线没变。
+    """
     text = str(msg or "")
     if not text:
         return False, "内容为空"
@@ -588,7 +555,7 @@ def send_text_ex(conversation_id, msg, quote_id="", mention=None):
         mc["mention"] = [str(x) for x in mention]
 
     # 先把目标解析成当前会话 id：入参可能是「人」的 id，也可能是 chat_id 漂移前
-    # 的旧会话 id。下面留档和日志都得用解析后的，否则自己发的消息会记到旧会话行上。
+    # 的旧会话 id。日志也用解析后的，不然对不上工作台里的那行会话。
     # jjy_send 里还会再解析一次(幂等)，那是给其它调用方兜底的。
     conversation_id = resolve_target(conversation_id)
     ok, err = jjy_send(conversation_id, 2, mc)
@@ -600,7 +567,6 @@ def send_text_ex(conversation_id, msg, quote_id="", mention=None):
             JJY_STATS["send_err"] = err
     if ok:
         log.info("已发送 -> %s (%d 字)", conversation_id, len(text))
-        _record_sent(conversation_id, text, quote_id)
     else:
         log.warning("发送失败 -> %s: %s", conversation_id, err)
     return ok, err
