@@ -632,17 +632,20 @@ function bubbleHTML(m,prev){
     ? `${qUp}<div class="wa-bubble media" data-mkey="${m.media.id}">${mediaHTML(m)}</div>`
     : rich ? `${qUp}<div class="wa-bubble media">${rich}</div>`
     : `<div class="wa-bubble">${qIn}${esc(m.content)}</div>`;
-  // 引用和撤回都要拿语聚那边的 message_id 去调接口，填 msg_id(报文里
-  // message.message_id 那个 "api_<uuid>i")。自己发的消息现在也有真 id ——
-  // 语聚会把 API 发出去的消息回推回来，库里那条就是回声那条。
-  // local: 是历史包袱：早先语聚不回推，自己发的只能挂本地占位 id 补录一条，
-  // 老库里还有这种行 —— 给操作条点下去必然失败，所以照旧不给。
-  // ⚠️ 别改成 message_content.message_id —— 收到的引用块里 quote_message_id
-  // 确实是那个 32 位 hex，但发送接口的 quoteMessageId 不认它(A/B 实测过)。
-  const rid=(m.id&&!String(m.id).startsWith('local:'))?m.id:'';
+  // 引用填 msg_id —— 报文里 message.message_id 那个 "api_<uuid>i"(外层)。
+  // 企微代运营渠道 A/B 实测(2026-08-11)，同一条消息的两个 id 只有外层认：
+  //   api_3c27ed59-…-cca9e2e7520ai  外层 -> 客户端显示成引用块 ✅
+  //   e51267c8f3faeb853d61a96aaf7af8f3  内层 -> 静默无效 ❌
+  // ⚠️ **只有对方发的(incoming)能引用**。自己发的那条 id 不带 i 后缀，
+  // 拿它当 quoteMessageId 语聚照回 2000，客户端却不画引用块 —— 所以
+  // me 这一侧干脆不给按钮，给了就是骗人。
+  // 撤回按钮也没了：这个渠道 revoke 直接返回 4000「不支持撤回!」，见 app.py
+  // 的 jjy_revoke()。接口和后端都留着，将来接小红书那类渠道再把按钮加回来。
+  // local: 是历史包袱：早先语聚不回推自己发的消息，只能挂本地占位 id 补录，
+  // 老库里还有这种行，没有真 id。
+  const rid=(!me&&m.id&&!String(m.id).startsWith('local:'))?m.id:'';
   const ops=rid?`<div class="wa-ops">`
     +`<button data-quote="${esc(rid)}">引用</button>`
-    +(me?`<button class="danger" data-revoke="${esc(rid)}">撤回</button>`:'')
     +`</div>`:'';
   html+=`<div class="wa-row ${me?'me':''} ${grp?'grp':''}" data-seq="${m.seq}">
     <div class="a" style="background:${avaColor(me?'me':(m.sender||m.sender_name))}">${esc(me?'我':initial(m.sender_name||m.sender))}</div>
