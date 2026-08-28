@@ -1249,7 +1249,8 @@ function renderEditor(){
   $('#btnAddReply').onclick=()=>{collectActions();M.actions.push({type:'reply',
     template:''});renderActions();};
   $('#btnAddHttp').onclick=()=>{collectActions();M.actions.push({type:'http',method:'GET',url:'',headers:'',body:'',
-    timeout_sec:10,retries:1,reply:true,quote:false,mention:false,reply_path:'',reply_template:'{result}'});renderActions();};
+    timeout_sec:10,retries:1,reply:true,quote:false,mention:false,sid_idle_min:0,
+    reply_path:'',reply_template:'{result}'});renderActions();};
   $('#btnAddAi').onclick=()=>{collectActions();M.actions.push({type:'ai',bailian:true,quote:true,mention:true,
     url:'',app_id:'',api_key:'',headers:'',extra:'',reply_path:'',
     ctx_mode:'count',ctx_count:10,ctx_minutes:30,
@@ -1475,6 +1476,8 @@ function renderActions(){
           <input type="number" class="aIn" data-i="${i}" data-k="timeout_sec" min="1" max="1900" value="${a.timeout_sec||10}"></div>
         <div class="ffield"><div class="lab">失败重试次数</div>
           <input type="number" class="aIn" data-i="${i}" data-k="retries" min="0" max="3" value="${a.retries??1}"></div>
+        <div class="ffield"><div class="lab">会话闲置(分钟)<span class="tip">{talk_sid} 多久算新对话，0=不滚动</span></div>
+          <input type="number" class="aIn" data-i="${i}" data-k="sid_idle_min" min="0" max="10080" value="${a.sid_idle_min??0}"></div>
         <div class="ffield"><div class="lab">把返回内容回复到来源会话
           <label class="sw"><input type="checkbox" class="aReply" data-i="${i}" ${a.reply?'checked':''}><span class="sl"></span></label></div></div></div>
       <div class="rpBox ${a.reply?'':'hide'}" data-i="${i}">
@@ -1493,7 +1496,8 @@ function renderActions(){
           请求体里任何变量都有 <code>{xxx_json}</code> 转义版（<b>放双引号内</b>），消息含引号/换行也不会拼坏 JSON。<br>
           图片/文件：<code>{attachments}</code> 是<b>整段 JSON 数组</b>，要放在双引号<b>外面</b>，和 {xxx_json} 刚好相反；
           单条明细用 <code>{media_url}</code> <code>{media_type}</code> <code>{media_name}</code> <code>{media_size}</code>。<br>
-          另有 <code>{talk_id}</code> 人级会话 id（群=群_人，私聊=人）、
+          会话 id 两个：<code>{talk_id}</code> 人级、永不变；<code>{talk_sid}</code> 在它后面加滚动后缀，
+          闲置超过上面配的分钟数就换一个 = <b>下游那边清零重来</b>（配 0 时两者相等）。<br>
           <code>{content_clean}</code> 剥掉「@昵称(备注)」的正文 —— <b>送给大模型用这个</b>。</div>
       </div></div></div>`;
   }).join('');

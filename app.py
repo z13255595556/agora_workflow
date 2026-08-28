@@ -1187,6 +1187,7 @@ def media_gc():
     while True:
         time.sleep(3600)
         try:
+            STORE.gw_sid_gc(30)      # 下游会话标记：30 天没动过就删
             n = STORE.ai_ctx_gc((CONFIG.get("storage") or {}).get("ai_context_days", 7))
             if n:
                 log.info("AI 上下文清理: 删除过期 %d 行", n)
@@ -1977,6 +1978,7 @@ def main():
                   st.get("max_workflow_runs", 0), log=log)
     directory_boot()        # 通讯录/群列表：先读库直接可用，后台再去上游更新
     try:                    # 启动先扫一次，别等第一个小时的定时清理
+        STORE.gw_sid_gc(30)
         n = STORE.ai_ctx_gc(st.get("ai_context_days", 7))
         if n:
             log.info("AI 上下文清理: 删除超过 %s 天的 %d 行",

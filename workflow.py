@@ -261,6 +261,11 @@ class WorkflowEngine:
                 # 老工作流大多在调普通接口，升级后不该突然开始引用和 @ 人。
                 a["quote"]       = bool(a.get("quote"))
                 a["mention"]     = bool(a.get("mention"))
+                # {talk_sid} 的闲置时长(分钟)。0 = 不滚动，{talk_sid} 恒等于
+                # {talk_id}(一个人一条永久时间线)。显式配 0 不能被默认值吞掉。
+                si = a.get("sid_idle_min")
+                a["sid_idle_min"] = min(10080, max(0, 0 if si in (None, "")
+                                                     else int(si)))
                 a.setdefault("reply_path", "")
                 a.setdefault("reply_template", "{result}")
                 # 「回复到」已下线：接口返回只回消息来源那个会话。语聚发送接口
@@ -832,7 +837,7 @@ class WorkflowEngine:
                                         "detail": "预览: %s %s" % (a.get("method"),
                                                   self._render(a.get("url"), ctx, urlencode=True))})
                     else:
-                        results.append(self._do_http(a, ctx, msg, dry))
+                        results.append(self._do_http(a, ctx, msg, wf, idx, dry))
                 elif a.get("type") == "ai":
                     # AI 回复真调模型是要花钱的，所以试跑一律只拼请求体不发出去
                     results.append(self._do_ai(a, ctx, msg, wf, idx, dry=True)
@@ -901,6 +906,37 @@ class WorkflowEngine:
         qid = str(msg.get("msg_id") or "") if a.get("quote") else ""
         return text, qid, ment
 
+    def _gw_ctx(self, a, ctx, wf=None, idx=0, dry=False):
+        """算出 {talk_sid} 并塞进 ctx 副本。返回 (ctx, 给运行记录的一句说明)。
+
+        {talk_id} 是纯身份拼的，**没有时间维度** —— 同一个人今天问和三个月后问是
+        同一个值，下游那条会话只会越滚越长(token 成本、陈旧上下文、表无限增长)。
+
+        配了 sid_idle_min 就给它加一个滚动后缀，闲置超过这么久换新的 = 下游那边
+        清零重来。逻辑和 AI 回复的「按闲置」模式(store.ai_ctx_pick)一致，但这里
+        **只存 (sid, ts) 不存消息内容** —— 历史在下游自己那儿。
+
+        0 = 不滚动，{talk_sid} 恒等于 {talk_id}，所以模板里一直写 {talk_sid} 就行。
+        """
+        talk_id = ctx.get("talk_id") or ""
+        idle = int(a.get("sid_idle_min") or 0)
+        if not (idle and talk_id and self.store):
+            return dict(ctx, talk_sid=talk_id), ""
+        # 键带动作序号：一条工作流挂两个「调用接口」时，各自一条下游会话，
+        # 否则第二个会接着第一个的会话聊。第 0 个用裸 wf_id，这样绝大多数
+        # (只有一个 http 动作的)工作流不受这个规则影响 —— 和 AI 动作同一个路子。
+        ck = str((wf or {}).get("id") or "")
+        if idx:
+            ck = "%s#%d" % (ck, idx)
+        try:
+            # 试跑只看不写：不推后真实会话的时间戳，也不凭空建行
+            sid, is_new = self.store.gw_sid(ck, talk_id, idle, touch=not dry)
+        except Exception as e:
+            self.log.warning("取下游会话 id 失败，这轮按不滚动处理: %s", e)
+            return dict(ctx, talk_sid=talk_id), ""
+        return (dict(ctx, talk_sid="%s.%s" % (talk_id, sid)),
+                "新会话" if is_new else "接着聊")
+
     def _do_reply(self, a, ctx, dry=False):
         """自定义回复：把模板渲染后发回**来源会话**。
 
@@ -966,7 +1002,8 @@ class WorkflowEngine:
                 time.sleep(5 * (i + 1))    # 重试退避(兼顾 429 busy 场景)
         return status, raw, (last_err or "无响应"), tries
 
-    def _do_http(self, a, ctx, msg, dry=False):
+    def _do_http(self, a, ctx, msg, wf=None, idx=0, dry=False):
+        ctx, sid_note = self._gw_ctx(a, ctx, wf, idx, dry)
         url = self._render(a.get("url"), ctx, urlencode=True)
         if not url.startswith(("http://", "https://")):
             return {"action": "http", "ok": False, "detail": "URL 必须以 http(s):// 开头"}
@@ -997,6 +1034,8 @@ class WorkflowEngine:
                     "detail": "调用失败(尝试%d次): %s" % (tries, err)}
 
         detail = "HTTP %s %s" % (status, url[:80])
+        if sid_note:
+            detail += " · " + sid_note
         # 超限被剔掉的附件要有交代 —— 静默丢的话，用户只会看到"模型没看见我的文件"
         _, anotes = self._attachments(msg)
         if anotes:

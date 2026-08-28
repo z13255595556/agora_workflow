@@ -157,6 +157,21 @@ CREATE INDEX IF NOT EXISTS ix_ai_ctx_ts ON ai_context(ts);
 """
 _SCHEMA += _AI_CTX_DDL
 
+# 下游网关会话：只记「这个人当前用哪个会话后缀、上次什么时候说的话」，
+# **不存消息内容** —— 历史在下游自己那儿，本地再存一份纯属浪费。
+# 和 ai_context 是两回事：那张表是喂给模型的上下文，这张只是一个滚动标记。
+_GW_SID_DDL = """
+CREATE TABLE IF NOT EXISTS gw_session(
+  wf_id   TEXT    NOT NULL DEFAULT '',   -- 工作流(动作)标识
+  talk_id TEXT    NOT NULL DEFAULT '',   -- 人维度 id，见 workflow._talk_id
+  sid     TEXT    NOT NULL DEFAULT '',   -- 当前会话后缀
+  ts      INTEGER NOT NULL DEFAULT 0,    -- 最后一次用它的时间
+  PRIMARY KEY (wf_id, talk_id)
+);
+CREATE INDEX IF NOT EXISTS ix_gw_sid_ts ON gw_session(ts);
+"""
+_SCHEMA += _GW_SID_DDL
+
 AI_CTX_TURNS = 50       # 「带最近几轮」的上限
 
 
@@ -922,6 +937,45 @@ class Store:
                 self._db.rollback()
                 raise
         return len(rows)
+
+    def gw_sid(self, wf_id, talk_id, idle_min, touch=True):
+        """取这个人当前的下游会话后缀，闲置超时就换一个新的。返回 (sid, is_new)。
+
+        和 ai_ctx_pick 的「按闲置」模式同一个套路：比**最后一次说话**的时间而不是
+        第一次 —— 「闲置多久算新对话」，聊得勤就一直续着。
+
+        touch=False 用于试跑：只看不写，不把真实会话的时间戳推后、也不凭空建行。
+        """
+        now = int(time.time())
+        wf_id, talk_id = str(wf_id or ""), str(talk_id or "")
+        with self._lock:
+            r = self._db.execute(
+                "SELECT sid, ts FROM gw_session WHERE wf_id=? AND talk_id=?",
+                (wf_id, talk_id)).fetchone()
+            alive = bool(r and r["sid"]) and \
+                (now - int(r["ts"] or 0)) <= max(1, int(idle_min or 30)) * 60
+            if alive:
+                sid, is_new = r["sid"], False
+            else:
+                sid, is_new = os.urandom(4).hex(), True
+            if touch:
+                self._db.execute(
+                    "INSERT OR REPLACE INTO gw_session(wf_id,talk_id,sid,ts)"
+                    " VALUES(?,?,?,?)", (wf_id, talk_id, sid, now))
+                self._db.commit()
+        return sid, is_new
+
+    def gw_sid_gc(self, days=30):
+        """删掉很久没动过的行。一行 ~100 字节，主要防「来过一次就再没来」的长尾。
+        days<=0 = 不过期。"""
+        d = int(days or 0)
+        if d <= 0:
+            return 0
+        with self._lock:
+            cur = self._db.execute("DELETE FROM gw_session WHERE ts < ?",
+                                   (int(time.time()) - d * 86400,))
+            self._db.commit()
+        return cur.rowcount or 0
 
     def ai_ctx_gc(self, days=7):
         """删掉超过 days 天的上下文。返回删除行数。
