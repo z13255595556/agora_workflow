@@ -775,18 +775,38 @@ def jjy_group_list(force=False):
     if not force:                 # 同 jjy_contacts：只有点了同步才回源
         return have, ""
 
-    out, page, err = [], 0, ""
-    while page < 50:                     # 50*100=5000 个群，够了；防翻页不收敛
-        # current 是**从 0 开始**的页码(文档: "默认为0，即第一页")
+    # ⚠️ current 是**从 1 开始**的页码。官方文档写的"默认为0，即第一页"是错的 ——
+    # 实测(2026-08-28, total=187)：current=0 和 current=1 返回**同一页**，
+    # current=2 才是第 101 条起。按 0 起翻的后果不是少几个群，是彻底跑偏：
+    #   current=0 -> 1..100    out=100  100>=187? 否, 继续
+    #   current=1 -> 1..100 又 out=200  200>=187? 是 -> break
+    # 拿到 200 条里只有 100 个不同的群，剩下 87 个一次都没拉到，而 total 那个
+    # 本来用来兜底的检查反倒成了提前刹车的。
+    # pageSize 提到 500(实测一次就回了全部 187 条)，顺带少翻两页。
+    PAGE_SIZE = 500
+    out, seen, page, err = [], set(), 1, ""
+    while page <= 50:                    # 50*500=2.5万个群，够了；防翻页不收敛
         data, e = _jjy_call("/v1/openapi/wxwork/group/list",
-                            current=page, pageSize=100)
+                            current=page, pageSize=PAGE_SIZE)
         if e:
             err = e
             break
         batch = ((data or {}).get("data") or [])
-        out.extend(x for x in batch if isinstance(x, dict))
+        # 按 imRoomId 去重：上游哪天再把页码语义改回去，最坏也就是白翻一页，
+        # 不会像上面那样把重复项当成新数据顶掉 total。
+        fresh = 0
+        for x in batch:
+            if not isinstance(x, dict):
+                continue
+            k = str(x.get("imRoomId") or x.get("wecomChatId") or "")
+            if k and k in seen:
+                continue
+            if k:
+                seen.add(k)
+            out.append(x)
+            fresh += 1
         total = int((data or {}).get("total") or 0)
-        if len(batch) < 100 or (total and len(out) >= total):
+        if len(batch) < PAGE_SIZE or not fresh or (total and len(out) >= total):
             break
         page += 1
 
