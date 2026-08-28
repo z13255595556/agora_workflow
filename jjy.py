@@ -218,9 +218,18 @@ def normalize(body, bot_name=""):
     ut = int(user.get("user_type") or 0)
     external = 1 if ut == 1 else (0 if ut in (2, 3, 4, 5, 7) else None)
 
-    # 语聚没给结构化 at_list，只能拿机器人昵称在正文里找
-    at_me = 1 if (is_group and bot_name and isinstance(content, str)
-                  and ("@" + bot_name) in content) else 0
+    # 语聚没给结构化 at_list —— A/B 实测(2026-08-26)：同一个群、同一个人、相隔 3.5 秒
+    # 发的两条(一条@一条没@)，逐字段拍平只差 message_content.text，没有 at_list /
+    # mention / is_at / remind 任何字段。rule_id 也一样(规则名里的「群@」只是名字，
+    # 语聚并不按它过滤 —— 没@的那条照样推过来了)。所以只能拿昵称在正文里找。
+    #
+    # 昵称优先用**推送里带的** source_addition.bot_name：config 里手配的那个实测
+    # 配错就静默全挂(空串 / 多一个空格 / 大小写不对都判 0，且没有任何报错)，
+    # 而推送里这个是语聚给的权威值，改了群昵称也跟着变。
+    # 非企微渠道没有 source_addition，退回配置值。
+    eff_bot = str((src.get("source_addition") or {}).get("bot_name") or bot_name or "")
+    at_me = 1 if (is_group and eff_bot and isinstance(content, str)
+                  and ("@" + eff_bot) in content) else 0
 
     # message_create_time 是**毫秒**
     ts = int(msg.get("message_create_time") or 0) // 1000 or int(time.time())
@@ -254,7 +263,8 @@ def normalize(body, bot_name=""):
             # 群列表接口返回的 imRoomId 全靠它映射回本地会话。私聊没有 room_id。
             "room_id": (src.get("source_addition") or {}).get("room_id") or "",
             "bot_id": str((src.get("source_addition") or {}).get("bot_wxid") or ""),
-            "bot_name": (src.get("source_addition") or {}).get("bot_name") or "",
+            # 生效昵称(推送优先/配置兜底)。下游剥 "@昵称(备注) " 前缀要用它
+            "bot_name": eff_bot,
             # 渠道原生 id：微信客服/企微代运营等，回连自有身份体系的 join key
             "addition": user.get("user_addition") or {},
         },

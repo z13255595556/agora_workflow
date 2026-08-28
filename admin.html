@@ -466,7 +466,9 @@
       <div class="frow">
         <div class="ffield"><div class="lab">机器人昵称
           <span class="tip">群聊「@我」判定用，靠正文文本匹配</span></div>
-          <input type="text" id="cfgJjyBot" placeholder="RTE智能助手"></div>
+          <input type="text" id="cfgJjyBot" placeholder="RTE智能助手">
+          <div class="varhint">企微渠道以推送里的 <code>source_addition.bot_name</code> 为准，
+            这里填的只是<b>其他渠道的兜底</b>，不用怕填错或改了群昵称</div></div>
         <div class="ffield"><div class="lab">去重窗口
           <span class="tip">记住最近 N 个 event_id，改动需重启</span></div>
           <input type="number" id="cfgJjyDedup" min="100" placeholder="4000"></div>
@@ -741,7 +743,8 @@ function renderWfs(){
         <span class="st">触发 ${st.runs||0} 次${st.fails?` · <span style="color:var(--red)">失败 ${st.fails}</span>`:''}</span>
         <span class="st">最近: ${fmtT(st.last_at)}</span>
         <span class="sp"></span>
-        <span class="st">冷却 ${w.cooldown_sec||0}s · 限 ${w.max_per_min||30}/分${w.serial?' · 串行':''}</span>
+        <span class="st">冷却 ${w.cooldown_sec||0}s · 限 ${w.max_per_min||30}/分${w.serial?' · 串行':''}${
+          w.attach_window_sec?` · 承接 ${w.attach_window_sec}s`:''}</span>
       </div></div>`;
   }).join('');
   $$('.wfTgl').forEach(el=>el.onchange=async()=>{
@@ -868,7 +871,7 @@ const BLANK=()=>({id:'wf_'+Math.random().toString(16).slice(2,10),name:'',enable
            schedule:{mode:'daily',time:'09:00',weekdays:[1,2,3,4,5],date:'',text:''},
            sessions:[],chat_type:'any',senders:[],sender_type:'any',at_me:'any',msg_types:[],
            content:{mode:'none',keywords:[],regex:''}},
-  actions:[],cooldown_sec:0,max_per_min:30,serial:false,stats:{}});
+  actions:[],cooldown_sec:0,max_per_min:30,serial:false,attach_window_sec:300,stats:{}});
 const WD=['一','二','三','四','五','六','日'];   // 1=周一 … 7=周日
 
 function openEditor(wf,showTest,isNew){
@@ -1114,12 +1117,15 @@ function renderEditor(){
      <div class="varhint" id="atLockTip" style="color:var(--amber,#b45309)">
        动作里有「AI 回复」，这条锁定为「必须 @」——群里靠 @ 决定这轮对话是谁在问。
        <b>私聊不受影响</b>，一对一本来就不用 @。</div>
-     <div class="varhint">拿机器人昵称在正文里匹配；私聊不参与判断</div>`,t.at_me!=='any','i-at')}
+     <div class="varhint">拿机器人昵称在正文里匹配（昵称以推送里的为准，系统设置那个只是兜底）；
+       私聊不参与判断。语聚报文里没有结构化的 @ 字段，实测过</div>`,t.at_me!=='any','i-at')}
   ${crow('cMt','消息类型',hMt,`
      <div style="display:flex;gap:6px;flex-wrap:wrap" id="mtBox">
        ${MSG_TYPES.map(([v,n])=>`<label class="bdg" style="cursor:pointer;padding:5px 10px">
          <input type="checkbox" value="${v}" ${t.msg_types.includes(v)?'checked':''} style="width:auto"> ${n}</label>`).join('')}
-     </div><div class="varhint">当前桥接层仅推送文本(2)，其余类型为预留</div>`,t.msg_types.length>0,'i-file')}
+     </div><div class="varhint">图片/文件/视频/语音都会推过来，勾了就能触发。<b>建议不填 = 全收</b>。<br>
+       ⚠️ 只勾「文本」的话，@提问之后<b>补发</b>的截图会被这里挡下 ——
+       既不触发也送不出去，只能躺在暂存区等下一次 @</div>`,t.msg_types.length>0,'i-file')}
   ${crow('cCt','消息内容',hCt,`
      <div class="seg" id="segCt" style="margin-bottom:9px">
        <button data-v="none" class="${c.mode==='none'?'on':''}">不限</button>
@@ -1163,7 +1169,15 @@ function renderEditor(){
       <input type="number" id="fRate" min="1" value="${M.max_per_min||30}"></div>
     <div class="ffield"><div class="lab">串行执行
       <label class="sw"><input type="checkbox" id="fSerial" ${M.serial?'checked':''}><span class="sl"></span></label></div>
-      <div class="varhint">同时触发时排队逐条执行。下游接口并发受限(如 Codex 并发=1)时务必开启</div></div></div>
+      <div class="varhint">同时触发时排队逐条执行。下游接口并发受限(如 Codex 并发=1)时开启。<br>
+        ⚠️ 开了就<b>永远不会有两个请求重叠</b> —— 下游若靠「新请求替代旧请求」来合并
+        上下文（@提问后补图的场景），开着就走不到那条路，会变成两次独立回答</div></div></div>
+  <div class="frow">
+    <div class="ffield"><div class="lab">@ 承接窗口(秒)<span class="tip">仅群聊 + 「必须@」时生效，0=关闭</span></div>
+      <input type="number" id="fAtWin" min="0" max="86400" value="${M.attach_window_sec??300}">
+      <div class="varhint">企微里发图片没法同时 @ 人，所以群里的图片/文件先<b>暂存</b>不触发；
+        这个人 @ 提问时一并带走（<b>向前</b>承接）。@ 过之后这么久内再发的图片，
+        算接着上一句问的（<b>向后</b>承接）。私聊没有这道门槛，不受影响</div></div></div>
 
   <div class="crow" id="testBox">
     <div class="crow-hd" onclick="this.parentElement.classList.toggle('open')">
@@ -1388,7 +1402,8 @@ function renderActions(){
       <div class="ffield"><div class="lab">回复内容<span class="tip">发回这条消息所在的会话，不用选目标</span></div>
         <input type="text" class="aIn" data-i="${i}" data-k="template" value="${esc(a.template||'')}">
         <div class="varhint">变量：<code>{content}</code> 消息内容 · <code>{sender_name}</code> 发送人 ·
-          <code>{source_name}</code> 来源会话名 · <code>{time}</code> <code>{date}</code></div></div>
+          <code>{source_name}</code> 来源会话名 · <code>{time}</code> <code>{date}</code> ·
+          <code>{media_name}</code> 文件名</div></div>
       </div></div>`;
     if(ai){
       const bl=a.bailian!==false;
@@ -1469,8 +1484,12 @@ function renderActions(){
               placeholder="data.answer 或 choices.0.message.content" value="${esc(a.reply_path||'')}" style="font-family:var(--mono)"></div>
           <div class="ffield"><div class="lab">回复模板</div>
             <input type="text" class="aIn" data-i="${i}" data-k="reply_template" value="${esc(a.reply_template||'{result}')}"></div></div>
-        <div class="varhint" style="margin-bottom:8px">回复模板变量：<code>{result}</code> 接口返回/提取值，另支持 {content} {sender_name} 等。
-          请求体里可用 <code>{content_json}</code> <code>{sender_name_json}</code>(JSON 转义，放双引号内)，消息含引号/换行也不会拼坏 JSON</div>
+        <div class="varhint" style="margin-bottom:8px">回复模板变量：<code>{result}</code> 接口返回/提取值，另支持 {content} {sender_name} 等。<br>
+          请求体里任何变量都有 <code>{xxx_json}</code> 转义版（<b>放双引号内</b>），消息含引号/换行也不会拼坏 JSON。<br>
+          图片/文件：<code>{attachments}</code> 是<b>整段 JSON 数组</b>，要放在双引号<b>外面</b>，和 {xxx_json} 刚好相反；
+          单条明细用 <code>{media_url}</code> <code>{media_type}</code> <code>{media_name}</code> <code>{media_size}</code>。<br>
+          另有 <code>{talk_id}</code> 人级会话 id（群=群_人，私聊=人）、
+          <code>{content_clean}</code> 剥掉「@昵称(备注)」的正文 —— <b>送给大模型用这个</b>。</div>
       </div></div></div>`;
   }).join('');
 
@@ -1545,6 +1564,7 @@ function collect(){
   M.cooldown_sec=+$('#fCd').value||0;
   M.max_per_min=+$('#fRate').value||30;
   M.serial=$('#fSerial').checked;
+  M.attach_window_sec=Math.max(0,Math.min(86400,+$('#fAtWin').value||0));
   collectActions();
 }
 function validate(){

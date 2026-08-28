@@ -9,8 +9,17 @@ workflow.py — 消息工作流引擎 (纯标准库)
     senders    指定发送人。聚合对话推送的 user_id 和企微群成员接口的
                imContactId 是两套 id，选人面板给的是后者 —— 所以两个都比(见 _match)
     at_me      是否@了托管账号: any(不限) / yes(必须@) / no(必须未@)   仅群聊有意义
-    msg_types  消息类型(2=文本…)
+               ⚠️ 语聚报文没有结构化 @ 字段(A/B 实测过)，靠昵称在正文里匹配。
+               昵称以推送里的 source_addition.bot_name 为准，配置值只是兜底
+    msg_types  消息类型(2=文本 101=图片 102=文件 103=视频 16=语音…)
     content    内容匹配: none / any(任一关键词) / all(全部关键词) / regex(正则)
+
+  工作流级 attach_window_sec —— 群聊「@ 承接窗口」(秒, 0=关闭)：
+    企微里发图片没法同时 @ 人，图片正文又是空串，所以配了「必须@」的工作流在群里
+    永远收不到图片。这个窗口按 talk_id(人)算，给两个方向都开口子：
+      向前  图片先到 -> 暂存不触发，等这个人 @ 提问时一并带走(一次调用拿到问题+附件)
+      向后  @ 过之后 N 秒内再发的图片，算接着上一句问的，直接触发
+    没 @ 的**纯文本**一律照旧拦住 —— 窗口只对图片/文件开口子。私聊没这道门槛。
 
   动作(按顺序执行，互相隔离，一个失败不影响其它)：
     reply      自定义回复(支持模板变量)。发到**来源会话** —— 不需要配任何 id，
@@ -30,7 +39,11 @@ workflow.py — 消息工作流引擎 (纯标准库)
     * 自己发出的消息永不触发(防回复死循环)
     * 运行记录(环形 200 条)供管理页排查
 
-模板变量：{content} {sender} {sender_name} {source} {source_name} {time} {date}
+模板变量：{content} {content_clean} {sender} {sender_name} {source} {source_name}
+          {talk_id} {time} {date} {msg_type}
+          {attachments}(整段 JSON 数组，放双引号**外面**)
+          {media_url} {media_type} {media_name} {media_size}
+          请求体里每个变量都有 {xxx_json} 转义版(放双引号**内**)
 回复模板额外支持 {result}(接口返回/提取值)。
 """
 
@@ -49,6 +62,16 @@ from collections import deque
 MAX_RESP_BYTES = 200_000     # 接口响应最多读取字节数
 MAX_REPLY_LEN  = 1800        # 回复消息最大长度(超出截断)
 WORKER_COUNT   = 3
+
+# ---- 送给下游 LLM 网关的正文/附件限制 ----
+# 对齐 /v1/chat 的默认值(question.text 20000 字符、单次 8 项、单个 10MB)。
+# 明知超限就不发 —— 那是必然失败的一次白往返，和「拿不到 external_contact_id
+# 时不退回 user_id」是同一条道理。网关侧调大了这里也跟着改。
+GW_TEXT_MAX      = 20000
+ATTACH_MAX       = 8
+ATTACH_MAX_BYTES = 10 * 1024 * 1024
+# 群聊「@ 承接窗口」默认秒数：@ 过之后这么久内发的图片/文件算接着上一句问的
+ATTACH_WINDOW    = 300
 SCHED_TICK     = 20          # 定时调度扫描间隔(秒)
 SCHED_GRACE    = 600         # 错过超过这个秒数的时间槽就不再补触发(防重启后刷历史任务)
 
@@ -105,6 +128,11 @@ class WorkflowEngine:
         self._minute   = {}    # wf_id -> deque[ts] 最近一分钟触发
         self._re_cache = {}
         self._serial_q = {}    # wf_id -> Queue  串行工作流的专属队列(一条一条跑)
+        # 群聊 @ 承接窗口。键都是 (wf_id, talk_id) —— 和 _cooldown 同一个路子，
+        # 但那个按会话(sid)、这个按人(talk_id)：群里 A 和 B 各承接各的，不能串台。
+        self._at_re = {}       # bot_name -> 剥 "@昵称(备注) " 的正则(和 _re_cache 分开)
+        self._atwin = {}       # -> 最后一次明确对机器人说话的 ts
+        self._pend  = {}       # -> [(ts, media), …] 待认领的图片/文件
         self._slots    = {}    # wf_id -> 已触发的时间槽(内存镜像，启动时从库恢复)
 
         for i in range(WORKER_COUNT):
@@ -279,6 +307,11 @@ class WorkflowEngine:
         # 免得直接编辑 workflows.json 绕过去。私聊不受影响(见 _match)。
         if any(x.get("type") == "ai" for x in acts):
             t["at_me"] = "yes"
+        # 群聊 @ 承接窗口(秒)。0 = 关闭承接，图片/文件在群里维持"没@就不触发"。
+        # 注意: 显式配 0 不能被默认值吞掉，写法同下面的 retries
+        aw = w.get("attach_window_sec")
+        w["attach_window_sec"] = min(86400, max(0, ATTACH_WINDOW if aw in (None, "")
+                                                  else int(aw)))
         w["cooldown_sec"] = min(86400, max(0, int(w.get("cooldown_sec") or 0)))
         w["max_per_min"]  = min(600, max(1, int(w.get("max_per_min") or 30)))
         w["serial"]       = bool(w.get("serial"))
@@ -324,6 +357,7 @@ class WorkflowEngine:
 
     def _sched_tick(self, now=None):
         now = now or time.time()
+        self._gc_pend(now)
         with self._lock:
             wfs = [dict(w) for w in self.workflows
                    if w.get("enabled") and (w.get("trigger") or {}).get("kind") == "schedule"]
@@ -433,11 +467,19 @@ class WorkflowEngine:
                 continue
             if not self._pass_limits(wf, msg):
                 continue
+            # 把这个人待认领的图片/文件挂到这次触发上(向前承接)。放在这里而不是
+            # _match 里，是因为 _match 还要给试跑用，不能有副作用。
+            m2 = dict(msg)
+            win = int(wf.get("attach_window_sec") or 0)
+            if win:
+                pend = self._claim((wf["id"], self._talk_id(msg)[0]), win)
+                if pend:
+                    m2["_pend_media"] = pend
             if wf.get("serial"):               # 串行：进该工作流的专属队列，逐条执行
-                self._serial_put(wf, msg)
+                self._serial_put(wf, m2)
                 continue
             try:
-                self._q.put_nowait((wf, dict(msg)))
+                self._q.put_nowait((wf, m2))
             except queue.Full:
                 self.log.warning("工作流队列已满，丢弃触发: %s", wf.get("name"))
 
@@ -488,7 +530,8 @@ class WorkflowEngine:
         return True
 
     # ============ 条件匹配 ============
-    def _match(self, wf, msg):
+    def _match(self, wf, msg, probe=False):
+        """probe=True 用于管理页「试跑」：只判定，不碰 @ 窗口/暂存区那些状态。"""
         t = wf.get("trigger") or {}
         sid     = str(msg.get("user_id") or "")
         sender  = str(msg.get("sender") or "")
@@ -542,8 +585,34 @@ class WorkflowEngine:
         # 「必须@」只在群聊成立。at_me 是拿机器人昵称在正文里找出来的(jjy.py)，
         # 私聊压根不参与计算、永远是 0 —— 硬卡的话配了这个条件的工作流在私聊
         # 永远不触发，而私聊本来就是一对一，不存在"要不要@我"这回事。
-        if t.get("at_me") == "yes" and sid.startswith("R:") and not at_me:
-            return False, "未 @ 托管账号"
+        # ---- 群聊「@ 承接窗口」----
+        # 企微里发图片没法同时 @ 人，而 at_me 是拿昵称在正文里找出来的 —— 图片
+        # 正文是空串(jjy._as_text 对 type 9 返回 "")，必然判没@。不做这一层，
+        # 「群里丢个日志给机器人分析」这条路就是死的。
+        # 窗口按 talk_id(人)算而不是按会话：群里 A 和 B 各承接各的，不能串台。
+        if t.get("at_me") == "yes" and sid.startswith("R:"):
+            key = (wf["id"], self._talk_id(msg)[0])
+            if at_me:
+                if not probe:                       # 明确对机器人说话 -> 开/续窗口
+                    with self._lock:
+                        self._atwin[key] = time.time()
+            else:
+                win = int(wf.get("attach_window_sec") or 0)
+                with self._lock:
+                    hot = bool(win) and (time.time() - self._atwin.get(key, 0) <= win)
+                # 承接只对图片/文件开口子。没 @ 的**纯文本**一律拦住 —— 放行的话
+                # 窗口期内群里任何闲聊都会触发，那就不是"承接"是失控了。
+                if not (msg.get("media") and win):
+                    return False, "未 @ 托管账号"
+                # 一律先收着，**窗口热也收**：这条消息自己能触发时 handle() 会把
+                # 暂存区一并取走(_attachments 按 url 去重，不会算成两个附件)；
+                # 而它要是被后面的条件挡下(最典型的是 msg_types 只勾了文本)，
+                # 收着才不会丢 —— 等这个人 @ 提问时一并带走。
+                if not probe:
+                    self._stash(key, msg["media"])
+                if not hot:
+                    return False, "已暂存，等待 @"
+                # 窗口内的图片/文件：算接着上一句问的(向后承接)，放行
         if t.get("at_me") == "no" and at_me:
             return False, "@ 了托管账号(条件要求未@)"
         if t.get("msg_types") and mtype not in t["msg_types"]:
@@ -585,19 +654,147 @@ class WorkflowEngine:
             except Exception as e:
                 self.log.exception("工作流[%s]执行异常: %s", wf.get("name"), e)
 
+    @staticmethod
+    def _talk_id(msg):
+        """人维度的唯一标识 -> (talk_id, chat_type, peer_uid)。
+
+        AI 回复的上下文键、@ 承接窗口的键、送给下游网关的 session_id 都用它 ——
+        一处口径，别在几个地方各拼一遍。
+
+        两个兜底都是给**非企微渠道**留的(抖音/小红书/钉钉的推送既没 room_id 也没
+        external_contact_id，不兜的话那类群会全塌成同一个 talk_id，A 问的话 B
+        下一轮就读到了)：
+          人  external_contact_id 优先(实测跨群稳定)，没有就退回推送的 user_id
+          群  imRoomId，没有就退回聊天会话地址
+        私聊不带群那一维：一个人只有一个私聊，人 id 本身就够。
+        peer_uid 为空 = 两个人 id 都拿不到，调用方应当整个不碰上下文。
+        """
+        sid = str(msg.get("user_id") or "")
+        jj  = msg.get("jjy") or {}
+        peer_uid = str((jj.get("addition") or {}).get("external_contact_id") or "") \
+                   or str(msg.get("sender") or "")
+        if sid.startswith("R:"):
+            room_id = str(jj.get("room_id") or "") or sid
+            return "%s_%s" % (room_id, peer_uid), "group", peer_uid
+        return peer_uid, "private", peer_uid
+
+    @staticmethod
+    def _attachments(msg):
+        """图片/文件 -> 下游 LLM 网关的 attachments[]。返回 (list, notes)。
+
+        每项**只出 {url, type}** —— 网关不允许未定义字段，多塞 size/name 会 422。
+        url 用语聚原始那个公网 S3 直链(不带签名、无鉴权直接 200、实测不过期)：
+        本项目的 /media/<id> 在反代鉴权后面，网关取不到，而且它明确禁内网地址。
+
+        超限的**当场剔除**并把原因写进 notes(会进运行记录) —— 明知必失败就别发，
+        和「拿不到 external_contact_id 时不退回 user_id」是同一条道理。
+        """
+        out, notes, seen = [], [], set()
+        items = list(msg.get("_pend_media") or [])
+        if msg.get("media"):
+            items.append(msg["media"])
+        for m in items:
+            kind = (m or {}).get("kind") or ""
+            # voice 不当附件：语聚已经把语音转写进正文了(jjy._as_text)，再传一遍是重复
+            if kind == "voice":
+                continue
+            url = str((m.get("cdn") or {}).get("url") or "").strip()
+            if not url.startswith(("http://", "https://")) or url in seen:
+                continue          # 同一条消息既在 media 又在暂存区时只算一个
+            seen.add(url)
+            size = int(m.get("size") or 0)
+            if size > ATTACH_MAX_BYTES:
+                notes.append("%s 超 %dMB 未上传" % (
+                    m.get("file_name") or url[-40:], ATTACH_MAX_BYTES // 1048576))
+                continue
+            if len(out) >= ATTACH_MAX:
+                notes.append("附件超过 %d 个，多余的未上传" % ATTACH_MAX)
+                break
+            out.append({"url": url, "type": "image" if kind == "image" else "file"})
+        return out, notes
+
+    def _strip_at(self, content, bot):
+        """剥掉正文里的 "@昵称(备注) "。
+
+        实测(2026-08-26)企微把外部机器人的 @ 渲染成 **@昵称(备注名)**，本例里
+        括号内外恰好同名：
+
+            "@RTE智能助手(RTE智能助手) 1"
+
+        只 replace("@"+昵称) 会留下 "(RTE智能助手) 1" 这种垃圾，所以必须连可选的
+        括号段和尾随空白一起剥(企微常用 U+2005 窄空格，\\s 覆盖它 —— 类别 Zs)。
+
+        为什么非剥不可：下游 /v1/chat 只有「最终 prompt 不含 @」才走纯文本快捷
+        路径；更要紧的是 @ 在 Hermes 里有语义(附件就是以 @file:/tmp/… 引用的)，
+        @昵称 很可能被当成一个解析不了的文件引用。
+        """
+        if not (content and bot):
+            return content or ""
+        rx = self._at_re.get(bot)
+        if rx is None:
+            rx = re.compile(r"@" + re.escape(bot) + r"(?:\([^)]*\))?\s*")
+            self._at_re[bot] = rx
+        return rx.sub("", content).strip()
+
+    def _stash(self, key, media):
+        """把一条还没人认领的图片/文件收进暂存区(只留最近 ATTACH_MAX 个)。"""
+        with self._lock:
+            lst = self._pend.setdefault(key, [])
+            lst.append((time.time(), media))
+            if len(lst) > ATTACH_MAX:
+                del lst[:-ATTACH_MAX]
+
+    def _claim(self, key, win):
+        """取走并清空这个人待认领的媒体，只要窗口内的。"""
+        now = time.time()
+        with self._lock:
+            lst = self._pend.pop(key, [])
+        return [m for ts, m in lst if now - ts <= max(1, win)]
+
+    def _gc_pend(self, now):
+        """清过期的暂存媒体和 @ 窗口。搭 _sched_tick 的车(每 SCHED_TICK 秒一跳)，
+        不为这点事单开线程。按最大允许窗口(86400)兜底，内存最多攒一天。"""
+        cut = now - 86400
+        with self._lock:
+            for k in [k for k, v in self._pend.items() if not v or v[-1][0] < cut]:
+                self._pend.pop(k, None)
+            for k in [k for k, v in self._atwin.items() if v < cut]:
+                self._atwin.pop(k, None)
+
     def _ctx(self, msg):
         sid = str(msg.get("user_id") or "")
         ts  = int(msg.get("time_stamp") or time.time())
         sched = bool(msg.get("is_sched"))
+        jj  = msg.get("jjy") or {}
+        content = msg.get("content") if isinstance(msg.get("content"), str) else ""
+        md  = msg.get("media") or {}
+        atts, _ = self._attachments(msg)
+        # question.text 有 20000 字符上限(type 12 合并转发展开 50 行能顶穿)。
+        # 在这儿截断，别留给下游回 422。
+        clean = self._strip_at(content, jj.get("bot_name") or "")[:GW_TEXT_MAX]
         return {
-            "content":     msg.get("content") if isinstance(msg.get("content"), str) else "",
+            "content":     content,
+            # 送给 LLM 网关用这个：剥了 @昵称、按上限截过
+            "content_clean": clean,
             "sender":      str(msg.get("sender") or ""),
             "sender_name": str(msg.get("sender_name") or msg.get("sender") or ""),
             "source":      sid,
             # 定时触发没有来源会话，给个可读名字，别在运行记录里显示成空
             "source_name": ("定时触发" if sched else str(self.resolve(sid) or sid)),
+            # 人维度 id。格式实测合下游 session_id 的正则(: _ - 都在白名单)
+            "talk_id":     self._talk_id(msg)[0],
             "time":        time.strftime("%H:%M:%S", time.localtime(ts)),
             "date":        time.strftime("%Y-%m-%d", time.localtime(ts)),
+            # ---- 媒体 ----
+            # ⚠️ {attachments} 是**整段 JSON 数组**，要放在模板的双引号**外面**，
+            #    和 {xxx_json}(放引号内)那套刚好相反。无媒体时是 []
+            "attachments": json.dumps(atts, ensure_ascii=False),
+            "msg_type":    str(msg.get("msg_type") or ""),
+            "media_url":   str((md.get("cdn") or {}).get("url") or ""),
+            "media_type":  {"image": "image", "file": "file",
+                            "video": "file"}.get(md.get("kind") or "", ""),
+            "media_name":  str(md.get("file_name") or ""),
+            "media_size":  str(md.get("size") or 0),
         }
 
     @staticmethod
@@ -710,8 +907,13 @@ class WorkflowEngine:
                 except Exception:
                     raw = None
                 last_err = "HTTP %s %s" % (e.code, (raw or "")[:120])
-                # 客户端类错误(参数/鉴权/路径/超限)重试也不会成功，直接放弃
-                if e.code in (400, 401, 403, 404, 405, 411, 413):
+                # 客户端类错误(参数/鉴权/路径/超限)重试也不会成功，直接放弃。
+                #   409 = 同 session 被新请求替代 / 归属冲突 —— 重试等于反过来把
+                #         那个新请求挤掉，越试越乱
+                #   422 = 请求体校验失败 —— 重试永远是同样的结果
+                # 502 **刻意不在这里**：那是下游 CLI 执行失败/超时，属瞬时故障，
+                # 重试有意义。
+                if e.code in (400, 401, 403, 404, 405, 409, 411, 413, 422):
                     break
             except Exception as e:
                 last_err = str(e) or e.__class__.__name__
@@ -750,6 +952,10 @@ class WorkflowEngine:
                     "detail": "调用失败(尝试%d次): %s" % (tries, err)}
 
         detail = "HTTP %s %s" % (status, url[:80])
+        # 超限被剔掉的附件要有交代 —— 静默丢的话，用户只会看到"模型没看见我的文件"
+        _, anotes = self._attachments(msg)
+        if anotes:
+            detail += " · " + "；".join(anotes)
         # ---- 提取返回内容 ----
         result = raw
         path = (a.get("reply_path") or "").strip()
@@ -811,25 +1017,22 @@ class WorkflowEngine:
         # 白往返；正文前缀照样加，只是没有真 @ 的红点。
         ment_id = str(((msg.get("jjy") or {}).get("addition") or {})
                       .get("external_contact_id") or "")
-        # talk_id = 用户维度的唯一标识，两个 or 都是给**非企微渠道**兜底
-        # (抖音/小红书/钉钉的推送既没 room_id 也没 external_contact_id，不兜的话
-        #  那类群会全塌成同一个 talk_id，A 问的话 B 下一轮就读到了)：
-        #   人  external_contact_id 优先(实测跨群稳定)，没有就退回推送的 user_id
-        #   群  imRoomId，没有就退回聊天会话地址
-        # 私聊不带群那一维：一个人只有一个私聊，人 id 本身就够。
-        # 两个人 id 都拿不到时 peer_uid 为空 —— 那时**整个不碰上下文**，
-        # 当一次性问答，宁可没记忆也不能串台。
-        peer_uid = ment_id or str(msg.get("sender") or "")
-        if sid.startswith("R:"):
-            room_id  = str((msg.get("jjy") or {}).get("room_id") or "") or sid
-            talk_id  = "%s_%s" % (room_id, peer_uid)
-            chat_type = "group"
-        else:
-            talk_id, chat_type = peer_uid, "private"
+        # talk_id/peer_uid 的口径见 _talk_id() —— 那里也是 @ 承接窗口和送给
+        # 下游网关的 session_id 用的同一份，别在这儿再拼一遍。
+        # peer_uid 为空(两个人 id 都拿不到)时**整个不碰上下文**，当一次性问答，
+        # 宁可没记忆也不能串台。
+        talk_id, chat_type, peer_uid = self._talk_id(msg)
         if not sid:
             return {"action": "ai", "ok": False,
                     "detail": "没有来源会话（定时工作流用不了 AI 回复）"}
         ask = (ctx.get("content") or "").strip()
+        if not ask:
+            # 图片正文是空串(jjy._as_text 对 type 9 返回 "")。以前这里直接判失败，
+            # 于是"发张图问机器人"连私聊都走不通。有媒体就用文件名兜一句占位。
+            md = msg.get("media") or {}
+            if md:
+                ask = ("[%s] %s" % (md.get("kind") or "媒体",
+                                    md.get("file_name") or "")).strip()
         if not ask:
             return {"action": "ai", "ok": False, "detail": "触发消息没有文本内容"}
 
@@ -1027,7 +1230,7 @@ class WorkflowEngine:
         se = sample.get("sender_external")
         msg["sender_external"] = int(se) if se in (0, 1, "0", "1") \
             else self.classify(msg["sender"])
-        ok, reason = self._match(wf, msg)
+        ok, reason = self._match(wf, msg, probe=True)
         out = {"matched": ok, "reason": reason, "results": []}
         if ok:
             out["results"] = self._run(wf, msg, dry=True, run_http=run_http)
