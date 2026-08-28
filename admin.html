@@ -1123,9 +1123,9 @@ function renderEditor(){
      <div style="display:flex;gap:6px;flex-wrap:wrap" id="mtBox">
        ${MSG_TYPES.map(([v,n])=>`<label class="bdg" style="cursor:pointer;padding:5px 10px">
          <input type="checkbox" value="${v}" ${t.msg_types.includes(v)?'checked':''} style="width:auto"> ${n}</label>`).join('')}
-     </div><div class="varhint">图片/文件/视频/语音都会推过来，勾了就能触发。<b>建议不填 = 全收</b>。<br>
-       ⚠️ 只勾「文本」的话，@提问之后<b>补发</b>的截图会被这里挡下 ——
-       既不触发也送不出去，只能躺在暂存区等下一次 @</div>`,t.msg_types.length>0,'i-file')}
+     </div><div class="varhint">图片/文件/视频/语音都会推过来，勾了就能触发。不填 = 全收。<br>
+       这里管的是「什么消息<b>开启</b>一轮对话」—— 只勾「文本」也不影响承接：
+       @ 之后补发的图片/文件算<b>延续</b>已开的那一轮，不受这里限制</div>`,t.msg_types.length>0,'i-file')}
   ${crow('cCt','消息内容',hCt,`
      <div class="seg" id="segCt" style="margin-bottom:9px">
        <button data-v="none" class="${c.mode==='none'?'on':''}">不限</button>
@@ -1249,7 +1249,7 @@ function renderEditor(){
   $('#btnAddReply').onclick=()=>{collectActions();M.actions.push({type:'reply',
     template:''});renderActions();};
   $('#btnAddHttp').onclick=()=>{collectActions();M.actions.push({type:'http',method:'GET',url:'',headers:'',body:'',
-    timeout_sec:10,retries:1,reply:true,reply_path:'',reply_template:'{result}'});renderActions();};
+    timeout_sec:10,retries:1,reply:true,quote:false,mention:false,reply_path:'',reply_template:'{result}'});renderActions();};
   $('#btnAddAi').onclick=()=>{collectActions();M.actions.push({type:'ai',bailian:true,quote:true,mention:true,
     url:'',app_id:'',api_key:'',headers:'',extra:'',reply_path:'',
     ctx_mode:'count',ctx_count:10,ctx_minutes:30,
@@ -1478,6 +1478,11 @@ function renderActions(){
         <div class="ffield"><div class="lab">把返回内容回复到来源会话
           <label class="sw"><input type="checkbox" class="aReply" data-i="${i}" ${a.reply?'checked':''}><span class="sl"></span></label></div></div></div>
       <div class="rpBox ${a.reply?'':'hide'}" data-i="${i}">
+        <div class="frow">
+          <div class="ffield"><div class="lab">群里引用原消息<span class="tip">私聊不引用；仅企微渠道生效</span>
+            <label class="sw"><input type="checkbox" class="aSw" data-i="${i}" data-k="quote" ${a.quote?'checked':''}><span class="sl"></span></label></div></div>
+          <div class="ffield"><div class="lab">群里 @ 提问的人<span class="tip">私聊不 @，一对一没必要</span>
+            <label class="sw"><input type="checkbox" class="aSw" data-i="${i}" data-k="mention" ${a.mention?'checked':''}><span class="sl"></span></label></div></div></div>
         <div class="frow">
           <div class="ffield"><div class="lab">提取字段<span class="tip">JSON 点路径，留空取整个响应</span></div>
             <input type="text" class="aIn" data-i="${i}" data-k="reply_path"

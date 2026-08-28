@@ -257,6 +257,10 @@ class WorkflowEngine:
                 r = a.get("retries")          # 注意: 显式配 0 时不能被默认值 1 吞掉
                 a["retries"]     = min(3, max(0, 1 if r in (None, "") else int(r)))
                 a["reply"]       = bool(a.get("reply"))
+                # 引用/@ 默认**关**，和 AI 动作(默认开)不一样：http 动作是通用的，
+                # 老工作流大多在调普通接口，升级后不该突然开始引用和 @ 人。
+                a["quote"]       = bool(a.get("quote"))
+                a["mention"]     = bool(a.get("mention"))
                 a.setdefault("reply_path", "")
                 a.setdefault("reply_template", "{result}")
                 # 「回复到」已下线：接口返回只回消息来源那个会话。语聚发送接口
@@ -590,6 +594,7 @@ class WorkflowEngine:
         # 正文是空串(jjy._as_text 对 type 9 返回 "")，必然判没@。不做这一层，
         # 「群里丢个日志给机器人分析」这条路就是死的。
         # 窗口按 talk_id(人)算而不是按会话：群里 A 和 B 各承接各的，不能串台。
+        carried = False        # 这条是不是「被承接进来的媒体」，见下面 msg_types
         if t.get("at_me") == "yes" and sid.startswith("R:"):
             key = (wf["id"], self._talk_id(msg)[0])
             if at_me:
@@ -613,9 +618,15 @@ class WorkflowEngine:
                 if not hot:
                     return False, "已暂存，等待 @"
                 # 窗口内的图片/文件：算接着上一句问的(向后承接)，放行
+                carried = True
         if t.get("at_me") == "no" and at_me:
             return False, "@ 了托管账号(条件要求未@)"
-        if t.get("msg_types") and mtype not in t["msg_types"]:
+        # 被承接进来的媒体**不受消息类型过滤**。
+        # msg_types 管的是「什么消息**开启**一轮对话」，承接窗口管的是「什么消息
+        # **延续**已经开着的那一轮」，两件事。不分开的话最自然的一种配法就废了：
+        # 只勾「文本」时，@提问之后补发的截图会被这儿挡下 —— 既不触发也送不出去，
+        # 只能躺在暂存区等下一次 @，客户等不到任何反应。
+        if t.get("msg_types") and mtype not in t["msg_types"] and not carried:
             return False, "消息类型不匹配"
 
         c = t.get("content") or {}
@@ -856,6 +867,40 @@ class WorkflowEngine:
                     self.log.warning("运行记录持久化失败: %s", e)
         return results
 
+    def _decorate(self, a, ctx, msg, sid, text):
+        """群里给回复加「引用原消息 + @提问的人」。返回 (text, quote_id, mention)。
+
+        两个开关**只在群里生效** —— 私聊是一对一，引用谁、@ 谁都是明摆着的，
+        加了只是噪音。
+
+        @ 为什么正文前缀和结构化 mention 都给：前缀保证「看得见」(语聚推过来的
+        @ 本来就是正文里的纯文本，at_me 就是这么认出来的)；mention 争取「真被@到、
+        有红点」，它不被认时 _wf_send 会摘掉重发，不影响这条回复发出去。
+
+        ⚠️ mention 要的是**企微那套**人 id(external_contact_id = imContactId = wxid)。
+        实测(直接打语聚发送接口)：
+
+          ["1688851163628036"]  external_contact_id 数组 -> Code 2000 ✅
+          "1688851163628036"    裸字符串                 -> 503 invalid message body
+          ["2919edc…de88"]      推送的 user_id           -> 503 the mention user(...) is not in the room
+          ["@all"]              没有这个特殊值           -> 503 同上
+
+        那句 "is not in the room" 说明语聚是拿这个 id 去群成员表里查的 —— 所以
+        拿不到 external_contact_id 时**不要**退回 user_id，那是必然失败的一次
+        白往返；正文前缀照样加，只是没有真 @ 的红点。
+        """
+        if not sid.startswith("R:"):
+            return text, "", None
+        ment = None
+        if a.get("mention"):
+            ment_id = str(((msg.get("jjy") or {}).get("addition") or {})
+                          .get("external_contact_id") or "")
+            text = "@%s %s" % (ctx.get("sender_name") or ment_id, text)
+            if ment_id:
+                ment = [ment_id]
+        qid = str(msg.get("msg_id") or "") if a.get("quote") else ""
+        return text, qid, ment
+
     def _do_reply(self, a, ctx, dry=False):
         """自定义回复：把模板渲染后发回**来源会话**。
 
@@ -982,11 +1027,16 @@ class WorkflowEngine:
             if not tgt:
                 return {"action": "http", "ok": False,
                         "detail": detail + " · 定时触发没有来源会话，回复不了（请关掉回复开关）"}
+            text, qid, ment = self._decorate(a, ctx, msg, tgt, text)
+            if len(text) > MAX_REPLY_LEN:          # 加了 @前缀可能又超了，再截一次
+                text = text[:MAX_REPLY_LEN] + "…"
             if dry:
                 return {"action": "http", "ok": True,
-                        "detail": detail + " · 回复预览 → %s：%s" % (
+                        "detail": detail + " · 回复预览%s → %s：%s" % (
+                            ("(引用+@)" if (qid and ment) else
+                             "(引用)" if qid else "(@)" if ment else ""),
                             ctx.get("source_name") or tgt, text[:200])}
-            if not self.send_text(tgt, text):
+            if not self.send_text(tgt, text, qid, ment):
                 return {"action": "http", "ok": False, "detail": detail + " · 回复失败"}
             detail += " · 已回复 " + (ctx.get("source_name") or tgt)
         elif dry:
@@ -1006,17 +1056,6 @@ class WorkflowEngine:
         """
         sid  = ctx.get("source") or ""      # ⚠️ 聊天会话**地址** "R:"/"S:"+chat_id
                                             #    和下面的 ai_sid 同名不同义
-        # @ 用的是**企微那套**人 id(external_contact_id = imContactId = wxid)。
-        # 实测(直接打语聚发送接口)：
-        #   ["1688851163628036"]  external_contact_id 数组 -> Code 2000 ✅
-        #   "1688851163628036"    裸字符串                 -> 503 invalid message body
-        #   ["2919edc…de88"]      推送的 user_id           -> 503 the mention user(...) is not in the room
-        #   ["@all"]              没有这个特殊值           -> 503 同上
-        # 那句 "is not in the room" 说明语聚是拿 id 去群成员表里查的 —— 所以
-        # 拿不到 external_contact_id 时**不要**退回 user_id，那是必然失败的一次
-        # 白往返；正文前缀照样加，只是没有真 @ 的红点。
-        ment_id = str(((msg.get("jjy") or {}).get("addition") or {})
-                      .get("external_contact_id") or "")
         # talk_id/peer_uid 的口径见 _talk_id() —— 那里也是 @ 承接窗口和送给
         # 下游网关的 session_id 用的同一份，别在这儿再拼一遍。
         # peer_uid 为空(两个人 id 都拿不到)时**整个不碰上下文**，当一次性问答，
@@ -1117,21 +1156,8 @@ class WorkflowEngine:
 
         text = self._render(a.get("reply_template") or "{result}",
                             dict(ctx, result=result)).strip()
-        # 引用 + @ 都只在群里做。私聊是一对一：引用谁、@ 谁都是明摆着的，
-        # 加了只是噪音。
-        #
-        # @ 为什么正文前缀和结构化 mention 都给：前缀保证「看得见」——
-        # 语聚推过来的 @ 本来就是正文里的纯文本，at_me 就是这么认出来的；
-        # mention 争取「真被@到、有红点」，它不被认时 _wf_send 会摘掉重发，
-        # 不影响这条回复发出去。
-        ment, qid = None, ""
-        if sid.startswith("R:"):
-            if a.get("mention"):
-                text = "@%s %s" % (ctx.get("sender_name") or peer_uid, text)
-                if ment_id:
-                    ment = [ment_id]
-            if a.get("quote"):
-                qid = str(msg.get("msg_id") or "")
+        # 引用 + @ 的拼装见 _decorate() —— 和「调用接口」动作共用同一份
+        text, qid, ment = self._decorate(a, ctx, msg, sid, text)
         if len(text) > MAX_REPLY_LEN:
             text = text[:MAX_REPLY_LEN] + "…"
         if not self.send_text(sid, text, qid, ment):
