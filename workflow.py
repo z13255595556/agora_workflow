@@ -8,6 +8,10 @@ workflow.py — 消息工作流引擎 (纯标准库)
     sessions   指定会话(群 R: / 私聊 S:)
     senders    指定发送人。聚合对话推送的 user_id 和企微群成员接口的
                imContactId 是两套 id，选人面板给的是后者 —— 所以两个都比(见 _match)
+    exclude_sessions / exclude_senders
+               黑名单：命中就**不触发**。认的 id 和上面两项完全一样，但**优先于**
+               它们 —— 同一个会话/人两边都勾中时以「不触发」为准。典型用法是
+               "全量跑，但内部测试群 / 另一个机器人账号别跑"
     at_me      是否@了托管账号: any(不限) / yes(必须@) / no(必须未@)   仅群聊有意义
                ⚠️ 语聚报文没有结构化 @ 字段(A/B 实测过)，靠昵称在正文里匹配。
                昵称以推送里的 source_addition.bot_name 为准，配置值只是兜底
@@ -228,9 +232,13 @@ class WorkflowEngine:
         s["text"]     = str(s.get("text") or "")
         t["schedule"] = s
         t["sessions"]  = [s2 for s2 in (t.get("sessions") or []) if s2]
+        # 黑名单(排除)：和白名单同构，留空 = 不排除。老配置里没有这两个键，
+        # 补成空列表就等于"没排除任何人"，行为和升级前一模一样
+        t["exclude_sessions"] = [s2 for s2 in (t.get("exclude_sessions") or []) if s2]
         t["chat_type"] = (t.get("chat_type")
                           if t.get("chat_type") in ("any", "group", "private") else "any")
         t["senders"]   = [s for s in (t.get("senders") or []) if s]
+        t["exclude_senders"] = [s for s in (t.get("exclude_senders") or []) if s]
         t["at_me"]     = t.get("at_me") if t.get("at_me") in ("any", "yes", "no") else "any"
         t["sender_type"] = (t.get("sender_type")
                             if t.get("sender_type") in ("any", "internal", "external") else "any")
@@ -565,20 +573,30 @@ class WorkflowEngine:
         # 所以「还没来过消息」不妨碍拿它当触发条件：第一条消息一到就对上了。
         # peer(=人 id) 只在私聊算会话别名 —— 群聊里它是**发言人**，
         # 认了就变成"张三在任何群说话都算这个会话"。
-        if t.get("sessions"):
-            alias = [sid, alt_chat, alt_room]
-            if sid.startswith("S:"):
-                alias.append(peer)
-            if not any(x in t["sessions"] for x in alias if x):
-                return False, "会话不匹配"
+        alias = [x for x in (sid, alt_chat, alt_room) if x]
+        if sid.startswith("S:") and peer:
+            alias.append(peer)
+        # 黑名单先判，且**优先于**白名单：同一个会话两边都勾中时以「不触发」为准。
+        # "别在这儿跑"是显式排除，比"在这些会话跑"更强的意思；而且排除的典型用法
+        # (内部测试群、老板群)判错的代价明显更大 —— 宁可少触发一次。
+        # 放在最前面还有个必须要的副作用：被排除的会话连 @ 承接窗口的暂存都不走，
+        # 不然图片会白白攒在暂存区，等到下次 @ 时被别的工作流一起取走。
+        if t.get("exclude_sessions") and any(x in t["exclude_sessions"] for x in alias):
+            return False, "会话在排除名单里"
+        if t.get("sessions") and not any(x in t["sessions"] for x in alias):
+            return False, "会话不匹配"
         ct = t.get("chat_type", "any")
         if ct == "group" and not sid.startswith("R:"):
             return False, "非群聊消息(条件要求仅群聊)"
         if ct == "private" and not sid.startswith("S:"):
             return False, "非私聊消息(条件要求仅私聊)"
         # 发送人只认「人」的 id：推送的 user_id，或 external_contact_id。
-        if t.get("senders") and sender not in t["senders"] \
-           and peer not in t["senders"]:
+        # 两个 id 任一命中黑名单就算命中 —— 排除是"这个人别触发"，
+        # 不能因为他这次是以另一个 id 报上来的就漏过去。
+        who = [x for x in (sender, peer) if x]
+        if t.get("exclude_senders") and any(x in t["exclude_senders"] for x in who):
+            return False, "发送人在排除名单里"
+        if t.get("senders") and not any(x in t["senders"] for x in who):
             return False, "发送人不匹配"
         stype = t.get("sender_type", "any")
         if stype in ("internal", "external"):

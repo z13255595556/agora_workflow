@@ -695,9 +695,11 @@ function trigSummary(w){
     return out.join('');
   }
   out.push(t.sessions?.length?`<span class="bdg blue">会话 ${t.sessions.length} 个</span>`:'<span class="bdg">所有会话</span>');
+  if(t.exclude_sessions?.length) out.push(`<span class="bdg red">排除 ${t.exclude_sessions.length} 个会话</span>`);
   if(t.chat_type==='group') out.push('<span class="bdg blue">仅群聊</span>');
   if(t.chat_type==='private') out.push('<span class="bdg blue">仅私聊</span>');
   if(t.senders?.length) out.push(`<span class="bdg blue">发送人 ${t.senders.length} 人</span>`);
+  if(t.exclude_senders?.length) out.push(`<span class="bdg red">排除 ${t.exclude_senders.length} 人</span>`);
   if(t.sender_type==='internal') out.push('<span class="bdg blue">仅内部成员</span>');
   if(t.sender_type==='external') out.push('<span class="bdg amber">仅外部用户</span>');
   if(t.at_me==='yes') out.push('<span class="bdg amber">必须@我</span>');
@@ -869,7 +871,8 @@ const chipsGet=key=>MSEL[key]?[...MSEL[key].vals]:[];
 const BLANK=()=>({id:'wf_'+Math.random().toString(16).slice(2,10),name:'',enabled:true,
   trigger:{kind:'message',
            schedule:{mode:'daily',time:'09:00',weekdays:[1,2,3,4,5],date:'',text:''},
-           sessions:[],chat_type:'any',senders:[],sender_type:'any',at_me:'any',msg_types:[],
+           sessions:[],exclude_sessions:[],chat_type:'any',
+           senders:[],exclude_senders:[],sender_type:'any',at_me:'any',msg_types:[],
            content:{mode:'none',keywords:[],regex:''}},
   actions:[],cooldown_sec:0,max_per_min:30,serial:false,attach_window_sec:300,stats:{}});
 const WD=['一','二','三','四','五','六','日'];   // 1=周一 … 7=周日
@@ -968,9 +971,11 @@ function paintSum(){
   if(t.chat_type==='group') w.push('群聊');
   else if(t.chat_type==='private') w.push('私聊');
   if(t.sessions.length) w.push(`<span class="kw">${t.sessions.length} 个指定会话</span>`);
+  if(t.exclude_sessions?.length) w.push(`会话不在<span class="kw">${t.exclude_sessions.length} 个排除名单</span>里`);
   if(t.sender_type==='internal') w.push('内部成员');
   else if(t.sender_type==='external') w.push('外部用户');
   if(t.senders.length) w.push(`<span class="kw">${t.senders.length} 位指定发送人</span>`);
+  if(t.exclude_senders?.length) w.push(`发送人不在<span class="kw">${t.exclude_senders.length} 人排除名单</span>里`);
   if(t.at_me==='yes') w.push('@了托管账号');
   else if(t.at_me==='no') w.push('未@托管账号');
   if(t.msg_types.length) w.push(t.msg_types.map(mtName).join('/'));
@@ -1024,13 +1029,18 @@ function crow(id,title,hintHtml,bodyHtml,open,icon){
 function renderEditor(){
   const t=M.trigger,c=t.content;
   if(!t.schedule) t.schedule={mode:'daily',time:'09:00',weekdays:[1,2,3,4,5],date:'',text:''};
+  // 黑名单是后加的字段。后端 _norm 会补齐，但新建/老缓存里可能还没有，兜一下
+  if(!t.exclude_sessions) t.exclude_sessions=[];
+  if(!t.exclude_senders) t.exclude_senders=[];
   const sc=t.schedule, sched=(t.kind==='schedule');
   // 清掉上一个工作流残留的动作多选器状态，避免串到这一个身上
   Object.keys(MSEL).forEach(k=>{if(/^a(Tgt|Rto)\d+$/.test(k)) delete MSEL[k];});
   const hSess=t.sessions.length?`<span class="set">已选 ${t.sessions.length} 个会话</span>`:'请选择需要接收消息的会话，不填将接收所有会话消息';
+  const hExSess=t.exclude_sessions.length?`<span class="set">已排除 ${t.exclude_sessions.length} 个会话</span>`:'留空即不排除；勾中的会话一律不触发这条工作流';
   const hCh=(!t.chat_type||t.chat_type==='any')?'不填则群聊和私聊都可触发'
     :`<span class="set">${t.chat_type==='group'?'仅群聊':'仅私聊'}</span>`;
   const hSend=t.senders.length?`<span class="set">已选 ${t.senders.length} 人</span>`:'不填则所有人都可触发';
+  const hExSend=t.exclude_senders.length?`<span class="set">已排除 ${t.exclude_senders.length} 人</span>`:'留空即不排除；这些人发的消息一律不触发这条工作流';
   const hUt=(!t.sender_type||t.sender_type==='any')?'不填将接收内部和外部所有用户'
     :`<span class="set">${t.sender_type==='internal'?'仅内部成员':'仅外部用户'}</span>`;
   const hAt=t.at_me==='any'?'不填将返回所有；仅支持群聊':`<span class="set">${t.at_me==='yes'?'必须@托管账号':'必须未@托管账号'}</span>`;
@@ -1089,6 +1099,11 @@ function renderEditor(){
     <span>以下条件<b>全部可选</b>，留空即“不限”。多个条件之间是 <b>并且</b> 关系——都满足才触发。
       已设置的条件会<span style="color:var(--blue);font-weight:600">高亮显示</span>。</span></div>
   ${crow('cSess','指定会话',hSess,`${mselHTML('tSess',PICKER,t.sessions)}`,t.sessions.length>0,'i-chat')}
+  ${crow('cExSess','排除会话（黑名单）',hExSess,`${mselHTML('tExSess',PICKER,t.exclude_sessions)}
+     <div class="varhint">勾中的会话<b>一律不触发</b>，且<b>优先于上面的「指定会话」</b>——
+       同一个会话两边都勾了，以不触发为准。典型用法是「全量跑，但内部测试群别跑」。<br>
+       认的 id 和「指定会话」完全一样（imRoomId / "S:"+chatId / 人 id），
+       还没来过消息的群也能提前排除。</div>`,t.exclude_sessions.length>0,'i-x')}
   ${crow('cCh','会话类型',hCh,`
      <div class="seg" id="segCh">
        <button data-v="any" class="${t.chat_type==='any'||!t.chat_type?'on':''}">不限</button>
@@ -1102,6 +1117,9 @@ function renderEditor(){
          <svg><use href="#i-sync"/></svg>刷新群成员</button>
        <span style="font-size:11.5px;color:var(--text-3)" id="memHint"></span></div>
      ${mselHTML('tSender',senderItems(t),t.senders)}`,t.senders.length>0,'i-users')}
+  ${crow('cExSend','排除发送人（黑名单）',hExSend,`${mselHTML('tExSender',senderItems(t),t.exclude_senders)}
+     <div class="varhint">这些人发的消息<b>一律不触发</b>，同样<b>优先于「指定发送人」</b>。
+       候选池跟着「指定会话」走，和上面那一栏是同一批人。</div>`,t.exclude_senders.length>0,'i-x')}
   ${crow('cUt','用户类型',hUt,`
      <div class="seg" id="segUt">
        <button data-v="any" class="${t.sender_type==='any'||!t.sender_type?'on':''}">不限</button>
@@ -1215,7 +1233,8 @@ function renderEditor(){
     </div></div>
   </div><!-- /pane3 -->`;
 
-  mselBind('tSess'); mselBind('tSender'); chipsBind('tKw');
+  mselBind('tSess'); mselBind('tExSess');
+  mselBind('tSender'); mselBind('tExSender'); chipsBind('tKw');
   // 触发方式切换：定时/消息 两套条件互斥显示
   $$('#kindBox .kind').forEach(b=>b.onclick=()=>{
     M.trigger.kind=b.dataset.v;
@@ -1382,6 +1401,14 @@ async function syncSenderList(force){
   st.q='';
   const sq=document.querySelector('.msel[data-key="tSender"] .msq'); if(sq) sq.value='';
   mselPaint('tSender');
+  // 「排除发送人」和它共用候选池，一起刷 —— 漏了的话改完「指定会话」，
+  // 黑名单那栏还列着上一批群的人，选出来的 id 根本对不上
+  const ex=MSEL.tExSender;
+  if(ex){
+    ex.items=keepSel(ex,items); ex.q='';
+    const eq=document.querySelector('.msel[data-key="tExSender"] .msq'); if(eq) eq.value='';
+    mselPaint('tExSender');
+  }
 }
 
 // ---- 动作渲染 ----
@@ -1566,7 +1593,9 @@ function collect(){
   if($('#fSchText')) sc.text=$('#fSchText').value||'';
   if($('#wdBox')) sc.weekdays=$$('#wdBox input:checked').map(x=>+x.value);
   M.trigger.sessions=mselGet('tSess');
+  M.trigger.exclude_sessions=mselGet('tExSess');
   M.trigger.senders=mselGet('tSender');
+  M.trigger.exclude_senders=mselGet('tExSender');
   M.trigger.msg_types=$$('#mtBox input:checked').map(x=>+x.value);
   M.trigger.content.keywords=chipsGet('tKw');
   M.trigger.content.regex=($('#fRegex')?.value||'').trim();
